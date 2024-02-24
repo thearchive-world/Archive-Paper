@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Thu, 15 Feb 2024 20:57:00 -0800
+Subject: [PATCH] Skip entity save serialization
+
+
+diff --git a/src/main/java/io/papermc/paper/chunk/system/scheduling/NewChunkHolder.java b/src/main/java/io/papermc/paper/chunk/system/scheduling/NewChunkHolder.java
+index ebb71db9f9c80334fd4e1ab015c21eb8e5c052fd..488019cce350be74d25b7e883ed6c4bdcf595e62 100644
+--- a/src/main/java/io/papermc/paper/chunk/system/scheduling/NewChunkHolder.java
++++ b/src/main/java/io/papermc/paper/chunk/system/scheduling/NewChunkHolder.java
+@@ -1920,7 +1920,8 @@ public final class NewChunkHolder {
+                     return false;
+                 }
+                 try {
+-                    mergeFrom = RegionFileIOThread.loadData(this.world, this.chunkX, this.chunkZ, RegionFileIOThread.RegionFileType.ENTITY_DATA, PrioritisedExecutor.Priority.BLOCKING);
++                    // The Archive - skip entity save serialization
++                    // mergeFrom = RegionFileIOThread.loadData(this.world, this.chunkX, this.chunkZ, RegionFileIOThread.RegionFileType.ENTITY_DATA, PrioritisedExecutor.Priority.BLOCKING);
+                 } catch (final Exception ex) {
+                     LOGGER.error("Cannot merge transient entities for chunk (" + this.chunkX + "," + this.chunkZ + ") in world '" + this.world.getWorld().getName() + "', data on disk will be replaced", ex);
+                 }
+@@ -1932,14 +1933,16 @@ public final class NewChunkHolder {
+                     // don't override the data on disk with nothing
+                     return false;
+                 } else {
+-                    EntityStorage.copyEntities(mergeFrom, save);
++                    // The Archive - skip entity save serialization
++                    // EntityStorage.copyEntities(mergeFrom, save);
+                 }
+             }
+             if (save == null && this.lastEntitySaveNull) {
+                 return false;
+             }
+ 
+-            RegionFileIOThread.scheduleSave(this.world, this.chunkX, this.chunkZ, save, RegionFileIOThread.RegionFileType.ENTITY_DATA);
++            // The Archive - skip entity save serialization
++            // RegionFileIOThread.scheduleSave(this.world, this.chunkX, this.chunkZ, save, RegionFileIOThread.RegionFileType.ENTITY_DATA);
+             this.lastEntitySaveNull = save == null;
+             if (unloading) {
+                 this.lastEntityUnload = save;
