@@ -41,7 +41,7 @@ jobs:
         run: ./gradlew createReobfPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
-        run: mv build/libs/paper-paperclip*-reobf.jar build/libs/archive-paper-${{ github.ref_name }}.jar
+        run: mv build/libs/archive-paper*-reobf.jar build/libs/archive-paper-${{ github.ref_name }}.jar
 
       - name: Upload Paperclip Jar
         uses: actions/upload-artifact@v4
@@ -53,5 +53,5 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           name: The Archive Paper ${{ github.ref_name }}
-          artifacts: build/libs/archive-*.jar
+          artifacts: build/libs/archive-paper-${{ github.ref_name }}.jar
           makeLatest: true
