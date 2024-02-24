@@ -28,20 +28,6 @@ bin/
 dist/
 manifest.mf
 
-/work/Temp/
-work/1.*
-work/Minecraft
-work/BuildData
-work/Bukkit
-work/CraftBukkit
-work/Paperclip
-work/Spigot
-work/Spigot-Server
-work/Spigot-API
-work/*.jar
-work/test-server
-work/ForgeFlower
-
 # Mac filesystem dust
 .DS_Store/
 .DS_Store
@@ -62,16 +48,12 @@ out/
 # other stuff
 run/
 
-Paper-Server/
-Paper-API/
 Archive-API/
 Archive-Server/
 Paperclip.jar
 paperclip.jar
 paperclip-*.jar
 paperclip.properties
+paper-api-generator/
 
 !gradle/wrapper/gradle-wrapper.jar
-
-test-plugin.settings.gradle.kts
-paper-api-generator.settings.gradle.kts

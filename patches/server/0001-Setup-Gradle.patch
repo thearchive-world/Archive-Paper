@@ -5,10 +5,18 @@ Subject: [PATCH] Setup Gradle
 
 
 diff --git a/build.gradle.kts b/build.gradle.kts
-index 241808d8619e17c0681f79acbbc98af5bf52dd89..5426bb3fba7f53f04801c2c35da2ee46ac874ea6 100644
+index 241808d8619e17c0681f79acbbc98af5bf52dd89..0006b14f373d34b943773d57100c25897fb953d9 100644
 --- a/build.gradle.kts
 +++ b/build.gradle.kts
-@@ -13,8 +13,10 @@ configurations.named(log4jPlugins.compileClasspathConfigurationName) {
+@@ -1,4 +1,6 @@
+-import io.papermc.paperweight.util.*
++import io.papermc.paperweight.util.Git
++import io.papermc.paperweight.util.defaultJavaLauncher
++import io.papermc.paperweight.util.path
+ 
+ plugins {
+     java
+@@ -13,8 +15,10 @@ configurations.named(log4jPlugins.compileClasspathConfigurationName) {
  val alsoShade: Configuration by configurations.creating
  
  dependencies {
@@ -21,3 +29,63 @@ index 241808d8619e17c0681f79acbbc98af5bf52dd89..5426bb3fba7f53f04801c2c35da2ee46
      // Paper start
      implementation("org.jline:jline-terminal-jansi:3.21.0")
      implementation("net.minecrell:terminalconsoleappender:1.3.0")
+@@ -155,7 +159,7 @@ fun TaskContainer.registerRunTask(
+     name: String,
+     block: JavaExec.() -> Unit
+ ): TaskProvider<JavaExec> = register<JavaExec>(name) {
+-    group = "paper"
++    group = "paperweight"
+     mainClass.set("org.bukkit.craftbukkit.Main")
+     standardInput = System.`in`
+     workingDir = rootProject.layout.projectDirectory
+diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+index 9d687da5bdf398bb3f6c84cdf1249a7213d09f2e..bd8736fb38f3a8fd2badfcf8a0538cd04f82ef42 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -3,23 +3,27 @@ package com.destroystokyo.paper;
+ import com.destroystokyo.paper.util.VersionFetcher;
+ import com.google.common.base.Charsets;
+ import com.google.common.io.Resources;
+-import com.google.gson.*;
++import com.google.gson.Gson;
++import com.google.gson.JsonArray;
++import com.google.gson.JsonObject;
++import com.google.gson.JsonSyntaxException;
++import java.io.BufferedReader;
++import java.io.IOException;
++import java.io.InputStreamReader;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.util.stream.StreamSupport;
++import javax.annotation.Nonnull;
++import javax.annotation.Nullable;
+ import net.kyori.adventure.text.Component;
++import net.kyori.adventure.text.TextComponent;
+ import net.kyori.adventure.text.event.ClickEvent;
+ import net.kyori.adventure.text.format.NamedTextColor;
+ import net.kyori.adventure.text.format.TextDecoration;
+-import net.kyori.adventure.text.TextComponent;
+-
+-import javax.annotation.Nonnull;
+-import javax.annotation.Nullable;
+-import java.io.*;
+-import java.net.HttpURLConnection;
+-import java.net.URL;
+-import java.util.stream.StreamSupport;
+ 
+ public class PaperVersionFetcher implements VersionFetcher {
+     private static final java.util.regex.Pattern VER_PATTERN = java.util.regex.Pattern.compile("^([0-9\\.]*)\\-.*R"); // R is an anchor, will always give '-R' at end
+-    private static final String GITHUB_BRANCH_NAME = "master";
++    private static final String GITHUB_BRANCH_NAME = "main";
+     private static final String DOWNLOAD_PAGE = "https://papermc.io/downloads/paper";
+     private static @Nullable String mcVer;
+ 
+@@ -32,7 +36,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+     @Override
+     public Component getVersionMessage(@Nonnull String serverVersion) {
+         String[] parts = serverVersion.substring("git-Paper-".length()).split("[-\\s]");
+-        final Component updateMessage = getUpdateStatusMessage("PaperMC/Paper", GITHUB_BRANCH_NAME, parts[0]);
++        final Component updateMessage = getUpdateStatusMessage("thearchive-world/Archive-Paper", GITHUB_BRANCH_NAME, parts[0]);
+         final Component history = getHistory();
+ 
+         return history != null ? TextComponent.ofChildren(updateMessage, Component.newline(), history) : updateMessage;
