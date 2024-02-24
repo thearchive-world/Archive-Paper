@@ -41,7 +41,7 @@ jobs:
         run: ./gradlew createReobfPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
-        run: mv build/libs/archive-paper*-reobf.jar build/libs/archive-paper-${{ github.ref_name }}.jar
+        run: mv build/libs/archive-paper-paperclip*-reobf.jar build/libs/archive-paper-1.20.4.jar
 
       - name: Upload Paperclip Jar
         uses: actions/upload-artifact@v4
