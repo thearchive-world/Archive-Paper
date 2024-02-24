@@ -62,10 +62,10 @@ out/
 # other stuff
 run/
 
-Paper-Server
-Paper-API
-Archive-API
-Archive-Server
+Paper-Server/
+Paper-API/
+Archive-API/
+Archive-Server/
 Paperclip.jar
 paperclip.jar
 paperclip-*.jar
