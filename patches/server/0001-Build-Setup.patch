@@ -1,35 +1,34 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
 Date: Fri, 23 Feb 2024 16:30:51 -0800
-Subject: [PATCH] Setup Gradle
+Subject: [PATCH] Build Setup
 
 
 diff --git a/build.gradle.kts b/build.gradle.kts
-index 241808d8619e17c0681f79acbbc98af5bf52dd89..0006b14f373d34b943773d57100c25897fb953d9 100644
+index 5d448d8a7cf6626a11791f30ad52baf41a099272..e8210f9af148c7b3a04eaec69156727c91c883eb 100644
 --- a/build.gradle.kts
 +++ b/build.gradle.kts
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,5 @@
 -import io.papermc.paperweight.util.*
 +import io.papermc.paperweight.util.Git
-+import io.papermc.paperweight.util.defaultJavaLauncher
 +import io.papermc.paperweight.util.path
  
  plugins {
      java
-@@ -13,8 +15,10 @@ configurations.named(log4jPlugins.compileClasspathConfigurationName) {
+@@ -12,8 +13,10 @@ configurations.named(log4jPlugins.compileClasspathConfigurationName) {
  val alsoShade: Configuration by configurations.creating
  
  dependencies {
 -    implementation(project(":paper-api"))
 -    implementation(project(":paper-mojangapi"))
 +    implementation(project(":archive-api"))
-+    implementation("io.papermc.paper:paper-mojangapi:1.20.4-R0.1-SNAPSHOT") {
++    implementation("io.papermc.paper:paper-mojangapi:1.20.5-R0.1-SNAPSHOT") {
 +        exclude("io.papermc.paper", "paper-api")
 +    }
      // Paper start
      implementation("org.jline:jline-terminal-jansi:3.21.0")
      implementation("net.minecrell:terminalconsoleappender:1.3.0")
-@@ -155,7 +159,7 @@ fun TaskContainer.registerRunTask(
+@@ -138,7 +141,7 @@ fun TaskContainer.registerRunTask(
      name: String,
      block: JavaExec.() -> Unit
  ): TaskProvider<JavaExec> = register<JavaExec>(name) {
@@ -38,40 +37,21 @@ index 241808d8619e17c0681f79acbbc98af5bf52dd89..0006b14f373d34b943773d57100c2589
      mainClass.set("org.bukkit.craftbukkit.Main")
      standardInput = System.`in`
      workingDir = rootProject.layout.projectDirectory
+@@ -146,9 +149,7 @@ fun TaskContainer.registerRunTask(
+         .asFile
+     javaLauncher.set(project.javaToolchains.launcherFor {
+         languageVersion.set(JavaLanguageVersion.of(21))
+-        vendor.set(JvmVendorSpec.JETBRAINS)
+     })
+-    jvmArgs("-XX:+AllowEnhancedClassRedefinition", "-XX:+AllowRedefinitionToAddDeleteMethods")
+ 
+     if (rootProject.childProjects["test-plugin"] != null) {
+         val testPluginJar = rootProject.project(":test-plugin").tasks.jar.flatMap { it.archiveFile }
 diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-index 9d687da5bdf398bb3f6c84cdf1249a7213d09f2e..bd8736fb38f3a8fd2badfcf8a0538cd04f82ef42 100644
+index 9d687da5bdf398bb3f6c84cdf1249a7213d09f2e..337a73aec6b28bac6f2815cff6142f1c2ea8fa4d 100644
 --- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
 +++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-@@ -3,23 +3,27 @@ package com.destroystokyo.paper;
- import com.destroystokyo.paper.util.VersionFetcher;
- import com.google.common.base.Charsets;
- import com.google.common.io.Resources;
--import com.google.gson.*;
-+import com.google.gson.Gson;
-+import com.google.gson.JsonArray;
-+import com.google.gson.JsonObject;
-+import com.google.gson.JsonSyntaxException;
-+import java.io.BufferedReader;
-+import java.io.IOException;
-+import java.io.InputStreamReader;
-+import java.net.HttpURLConnection;
-+import java.net.URL;
-+import java.util.stream.StreamSupport;
-+import javax.annotation.Nonnull;
-+import javax.annotation.Nullable;
- import net.kyori.adventure.text.Component;
-+import net.kyori.adventure.text.TextComponent;
- import net.kyori.adventure.text.event.ClickEvent;
- import net.kyori.adventure.text.format.NamedTextColor;
- import net.kyori.adventure.text.format.TextDecoration;
--import net.kyori.adventure.text.TextComponent;
--
--import javax.annotation.Nonnull;
--import javax.annotation.Nullable;
--import java.io.*;
--import java.net.HttpURLConnection;
--import java.net.URL;
--import java.util.stream.StreamSupport;
+@@ -19,7 +19,7 @@ import java.util.stream.StreamSupport;
  
  public class PaperVersionFetcher implements VersionFetcher {
      private static final java.util.regex.Pattern VER_PATTERN = java.util.regex.Pattern.compile("^([0-9\\.]*)\\-.*R"); // R is an anchor, will always give '-R' at end
@@ -80,7 +60,7 @@ index 9d687da5bdf398bb3f6c84cdf1249a7213d09f2e..bd8736fb38f3a8fd2badfcf8a0538cd0
      private static final String DOWNLOAD_PAGE = "https://papermc.io/downloads/paper";
      private static @Nullable String mcVer;
  
-@@ -32,7 +36,7 @@ public class PaperVersionFetcher implements VersionFetcher {
+@@ -32,7 +32,7 @@ public class PaperVersionFetcher implements VersionFetcher {
      @Override
      public Component getVersionMessage(@Nonnull String serverVersion) {
          String[] parts = serverVersion.substring("git-Paper-".length()).split("[-\\s]");
