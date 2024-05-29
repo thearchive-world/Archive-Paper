@@ -1,43 +1,23 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
-Date: Fri, 23 Feb 2024 16:30:51 -0800
+Date: Tue, 28 May 2024 23:10:10 -0700
 Subject: [PATCH] Build Setup
 
 
 diff --git a/build.gradle.kts b/build.gradle.kts
-index 5d448d8a7cf6626a11791f30ad52baf41a099272..aad2772a0311b809f44d51ac44b047eeea3f54f9 100644
+index 4998aff0b7cb084dcda15c6a18bbe45e99b6000a..854b39a443a2a2566b9ddc826f231dd22a4e49ea 100644
 --- a/build.gradle.kts
 +++ b/build.gradle.kts
-@@ -1,4 +1,5 @@
--import io.papermc.paperweight.util.*
-+import io.papermc.paperweight.util.Git
-+import io.papermc.paperweight.util.path
- 
- plugins {
-     java
-@@ -12,8 +13,10 @@ configurations.named(log4jPlugins.compileClasspathConfigurationName) {
+@@ -13,7 +13,7 @@ configurations.named(log4jPlugins.compileClasspathConfigurationName) {
  val alsoShade: Configuration by configurations.creating
  
  dependencies {
 -    implementation(project(":paper-api"))
--    implementation(project(":paper-mojangapi"))
 +    implementation(project(":archive-api"))
-+    implementation("io.papermc.paper:paper-mojangapi:1.20.6-R0.1-SNAPSHOT") {
-+        exclude("io.papermc.paper", "paper-api")
-+    }
      // Paper start
      implementation("org.jline:jline-terminal-jansi:3.21.0")
      implementation("net.minecrell:terminalconsoleappender:1.3.0")
-@@ -138,7 +141,7 @@ fun TaskContainer.registerRunTask(
-     name: String,
-     block: JavaExec.() -> Unit
- ): TaskProvider<JavaExec> = register<JavaExec>(name) {
--    group = "paper"
-+    group = "paperweight"
-     mainClass.set("org.bukkit.craftbukkit.Main")
-     standardInput = System.`in`
-     workingDir = rootProject.layout.projectDirectory
-@@ -146,9 +149,7 @@ fun TaskContainer.registerRunTask(
+@@ -152,9 +152,7 @@ fun TaskContainer.registerRunTask(
          .asFile
      javaLauncher.set(project.javaToolchains.launcherFor {
          languageVersion.set(JavaLanguageVersion.of(21))
@@ -47,28 +27,34 @@ index 5d448d8a7cf6626a11791f30ad52baf41a099272..aad2772a0311b809f44d51ac44b047ee
  
      if (rootProject.childProjects["test-plugin"] != null) {
          val testPluginJar = rootProject.project(":test-plugin").tasks.jar.flatMap { it.archiveFile }
-diff --git a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-index 9d687da5bdf398bb3f6c84cdf1249a7213d09f2e..337a73aec6b28bac6f2815cff6142f1c2ea8fa4d 100644
---- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-+++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
-@@ -19,7 +19,7 @@ import java.util.stream.StreamSupport;
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index e02102280ed1dc300191d19bbca8f00e17701753..c731b8a5b509993975aa731a06041de3fb4f1ec1 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -302,8 +302,8 @@ public class Main {
+                     deadline.add(Calendar.DAY_OF_YEAR, -3);
+                     if (buildDate.before(deadline.getTime())) {
+                         // Paper start - This is some stupid bullshit
+-                        System.err.println("*** Warning, you've not updated in a while! ***");
+-                        System.err.println("*** Please download a new build as per instructions from https://papermc.io/downloads/paper ***"); // Paper
++                        // System.err.println("*** Warning, you've not updated in a while! ***");
++                        // System.err.println("*** Please download a new build as per instructions from https://papermc.io/downloads/paper ***"); // Paper
+                         //System.err.println("*** Server will start in 20 seconds ***");
+                         //Thread.sleep(TimeUnit.SECONDS.toMillis(20));
+                         // Paper end
+diff --git a/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java b/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
+index e46714f38df931350d81c30907560c381c8d2725..9de5d6f6bc6febf64d97fcf0bf134523c5b318b1 100644
+--- a/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
++++ b/src/main/java/org/bukkit/craftbukkit/util/CraftMagicNumbers.java
+@@ -502,7 +502,7 @@ public final class CraftMagicNumbers implements UnsafeValues {
  
- public class PaperVersionFetcher implements VersionFetcher {
-     private static final java.util.regex.Pattern VER_PATTERN = java.util.regex.Pattern.compile("^([0-9\\.]*)\\-.*R"); // R is an anchor, will always give '-R' at end
--    private static final String GITHUB_BRANCH_NAME = "master";
-+    private static final String GITHUB_BRANCH_NAME = "main";
-     private static final String DOWNLOAD_PAGE = "https://papermc.io/downloads/paper";
-     private static @Nullable String mcVer;
- 
-@@ -32,7 +32,7 @@ public class PaperVersionFetcher implements VersionFetcher {
      @Override
-     public Component getVersionMessage(@Nonnull String serverVersion) {
-         String[] parts = serverVersion.substring("git-Paper-".length()).split("[-\\s]");
--        final Component updateMessage = getUpdateStatusMessage("PaperMC/Paper", GITHUB_BRANCH_NAME, parts[0]);
-+        final Component updateMessage = getUpdateStatusMessage("thearchive-world/Archive-Paper", GITHUB_BRANCH_NAME, parts[0]);
-         final Component history = getHistory();
+     public com.destroystokyo.paper.util.VersionFetcher getVersionFetcher() {
+-        return new com.destroystokyo.paper.PaperVersionFetcher();
++        return new com.destroystokyo.paper.util.VersionFetcher.DummyVersionFetcher();
+     }
  
-         return history != null ? TextComponent.ofChildren(updateMessage, Component.newline(), history) : updateMessage;
+     @Override
 diff --git a/src/main/java/org/bukkit/craftbukkit/util/Versioning.java b/src/main/java/org/bukkit/craftbukkit/util/Versioning.java
 index 774556a62eb240da42e84db4502e2ed43495be17..3b1f70b906cdbf9efee892779959c28ca1eac730 100644
 --- a/src/main/java/org/bukkit/craftbukkit/util/Versioning.java
