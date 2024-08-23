@@ -1,15 +1,14 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
-Date: Thu, 7 Mar 2024 13:17:28 -0800
+Date: Fri, 23 Aug 2024 12:49:37 -0700
 Subject: [PATCH] Disable all data directory saving
 
-includes maps, raids, etc
 
 diff --git a/src/main/java/net/minecraft/world/level/storage/DimensionDataStorage.java b/src/main/java/net/minecraft/world/level/storage/DimensionDataStorage.java
-index 1c16f43872d9cf9b087f247e9aaa04e7abe3d4ae..b10b1a9a994c067dc498030b3853636052248c48 100644
+index 6e23e69abd56eeda3b52a22019e1b74ae10682e7..882ff84006a4450b2a451bc369d3086d6298abd6 100644
 --- a/src/main/java/net/minecraft/world/level/storage/DimensionDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/DimensionDataStorage.java
-@@ -130,6 +130,7 @@ public class DimensionDataStorage implements java.io.Closeable { // Paper - Writ
+@@ -134,6 +134,7 @@ public class DimensionDataStorage implements java.io.Closeable { // Paper - Writ
      // Paper end - Write SavedData IO async
  
      public void save(boolean async) { // Paper - Write SavedData IO async

@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Fri, 23 Aug 2024 12:35:24 -0700
+Subject: [PATCH] Disable saving
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/io/RegionFileIOThread.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/io/RegionFileIOThread.java
+index 3218cbf84f54daf06e84442d5eb1a36d8da6b215..03f62efbadb9e09ee4134536ab8cc736be53fced 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/io/RegionFileIOThread.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/io/RegionFileIOThread.java
+@@ -566,6 +566,7 @@ public final class RegionFileIOThread extends PrioritisedQueueExecutorThread {
+ 
+     void scheduleSaveInternal(final ServerLevel world, final int chunkX, final int chunkZ, final CompoundTag data,
+                               final RegionFileType type, final Priority priority) {
++        if (true) return; // The Archive - don't save world data
+         final ChunkDataController taskController = getControllerFor(world, type);
+ 
+         final boolean[] created = new boolean[1];

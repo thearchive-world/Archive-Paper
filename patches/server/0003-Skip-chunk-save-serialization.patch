@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Fri, 23 Aug 2024 12:40:37 -0700
+Subject: [PATCH] Skip chunk save serialization
+
+
+diff --git a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+index 45eda96fd8a1acb87dbb69ce5495fec7e451416f..a6aeb99c64f5292b0d0e09e5410d33bf98e3cc4c 100644
+--- a/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
++++ b/src/main/java/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+@@ -1782,9 +1782,11 @@ public final class NewChunkHolder {
+         try {
+             if (unloading && ChunkSystemFeatures.supportsAsyncChunkSave()) {
+                 try {
+-                    final AsyncChunkSaveData asyncSaveData = ChunkSystemFeatures.getAsyncSaveData(this.world, chunk);
++                    // The Archive - Skip chunk serialization
++                    // final AsyncChunkSaveData asyncSaveData = ChunkSystemFeatures.getAsyncSaveData(this.world, chunk);
+ 
+-                    final PrioritisedExecutor.PrioritisedTask task = this.scheduler.loadExecutor.createTask(new AsyncChunkSerializeTask(this.world, chunk, asyncSaveData, this));
++                    final PrioritisedExecutor.PrioritisedTask task = this.scheduler.loadExecutor.createTask(() -> this.completeAsyncUnloadDataSave(RegionFileIOThread.RegionFileType.CHUNK_DATA, null));
++                    // final PrioritisedExecutor.PrioritisedTask task = this.scheduler.loadExecutor.createTask(new AsyncChunkSerializeTask(this.world, chunk, asyncSaveData, this));
+ 
+                     this.chunkDataUnload.task().setTask(task);
+ 
+@@ -1800,16 +1802,20 @@ public final class NewChunkHolder {
+                 }
+             }
+ 
+-            final CompoundTag save = ChunkSerializer.write(this.world, chunk);
++            // The Archive - Skip chunk serialization
++            // final CompoundTag save = ChunkSerializer.write(this.world, chunk);
+ 
+             if (unloading) {
+                 completing = true;
+-                this.completeAsyncUnloadDataSave(RegionFileIOThread.RegionFileType.CHUNK_DATA, save);
++                // The Archive - Skip chunk serialization
++                this.completeAsyncUnloadDataSave(RegionFileIOThread.RegionFileType.CHUNK_DATA, null);
++                // this.completeAsyncUnloadDataSave(RegionFileIOThread.RegionFileType.CHUNK_DATA, save);
+                 if (failedAsyncPrepare) {
+-                    LOGGER.info("Successfully serialized chunk data (" + this.chunkX + "," + this.chunkZ + ") in world '" + WorldUtil.getWorldName(this.world) + "' synchronously");
++                    // LOGGER.info("Successfully serialized chunk data (" + this.chunkX + "," + this.chunkZ + ") in world '" + WorldUtil.getWorldName(this.world) + "' synchronously");
+                 }
+             } else {
+-                RegionFileIOThread.scheduleSave(this.world, this.chunkX, this.chunkZ, save, RegionFileIOThread.RegionFileType.CHUNK_DATA);
++                // The Archive - Disable chunk saving
++                // RegionFileIOThread.scheduleSave(this.world, this.chunkX, this.chunkZ, save, RegionFileIOThread.RegionFileType.CHUNK_DATA);
+             }
+             chunk.setUnsaved(false);
+         } catch (final Throwable thr) {

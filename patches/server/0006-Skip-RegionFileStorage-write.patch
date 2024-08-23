@@ -1,29 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
-Date: Fri, 16 Feb 2024 01:30:13 -0800
+Date: Fri, 23 Aug 2024 12:44:27 -0700
 Subject: [PATCH] Skip RegionFileStorage write
 
 
 diff --git a/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileStorage.java b/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
-index fe312b1aef579cb4bf81bdd967cf72ff880d7505..516b65129602c3d33865497d6cab2e09904f933a 100644
+index 40689256711cc94a806ca1da346f4f62eda31526..e0ccde319205dc04ae7d6a264d4ec71b9003f7b8 100644
 --- a/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
 +++ b/src/main/java/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
-@@ -89,7 +89,7 @@ public class RegionFileStorage implements AutoCloseable {
-             return null;
-         }
-     }
--    
-+
-     public synchronized RegionFile getRegionFileIfLoaded(ChunkPos chunkcoordintpair) {
-         return this.regionCache.getAndMoveToFirst(ChunkPos.asLong(chunkcoordintpair.getRegionX(), chunkcoordintpair.getRegionZ()));
-     }
-@@ -313,6 +313,9 @@ public class RegionFileStorage implements AutoCloseable {
+@@ -325,6 +325,8 @@ public class RegionFileStorage implements AutoCloseable, ca.spottedleaf.moonrise
          if (nbt == null) {
              regionfile.clear(pos);
          } else {
 +            // The Archive - skip chunk writing
 +            if (true) return;
-+
              DataOutputStream dataoutputstream = regionfile.getChunkDataOutputStream(pos);
  
              try {
