@@ -38,7 +38,7 @@ jobs:
         run: ./gradlew build --stacktrace
 
       - name: Create Paperclip Jar
-        run: ./gradlew createReobfPaperclipJar --stacktrace
+        run: ./gradlew createMojmapPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
         run: mv build/libs/archive-paper-paperclip*-reobf.jar build/libs/archive-paper-${{ github.ref_name }}.jar
