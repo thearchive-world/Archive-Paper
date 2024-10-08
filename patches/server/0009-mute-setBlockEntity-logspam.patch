@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Tue, 8 Oct 2024 14:20:28 -0700
+Subject: [PATCH] mute setBlockEntity logspam
+
+
+diff --git a/src/main/java/net/minecraft/world/level/chunk/LevelChunk.java b/src/main/java/net/minecraft/world/level/chunk/LevelChunk.java
+index 7c11853c5090fbc4fa5b3e73a69acf166158fdec..584acc51309200de1c0acae298afd398ef0aa860 100644
+--- a/src/main/java/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/src/main/java/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -528,6 +528,7 @@ public class LevelChunk extends ChunkAccess implements ca.spottedleaf.moonrise.p
+         BlockState iblockdata = this.getBlockState(blockposition);
+ 
+         if (!iblockdata.hasBlockEntity()) {
++            if (true) return; // Archive - mute logspam
+             // Paper start - ServerExceptionEvent
+             com.destroystokyo.paper.exception.ServerInternalException e = new com.destroystokyo.paper.exception.ServerInternalException(
+                 "Trying to set block entity %s at position %s, but state %s does not allow it".formatted(blockEntity, blockposition, iblockdata)
+@@ -540,12 +541,12 @@ public class LevelChunk extends ChunkAccess implements ca.spottedleaf.moonrise.p
+ 
+             if (iblockdata != iblockdata1) {
+                 if (!blockEntity.getType().isValid(iblockdata)) {
+-                    LevelChunk.LOGGER.warn("Trying to set block entity {} at position {}, but state {} does not allow it", new Object[]{blockEntity, blockposition, iblockdata});
++                    LevelChunk.LOGGER.debug("Trying to set block entity {} at position {}, but state {} does not allow it", new Object[]{blockEntity, blockposition, iblockdata});
+                     return;
+                 }
+ 
+                 if (iblockdata.getBlock() != iblockdata1.getBlock()) {
+-                    LevelChunk.LOGGER.warn("Block state mismatch on block entity {} in position {}, {} != {}, updating", new Object[]{blockEntity, blockposition, iblockdata, iblockdata1});
++                    LevelChunk.LOGGER.debug("Block state mismatch on block entity {} in position {}, {} != {}, updating", new Object[]{blockEntity, blockposition, iblockdata, iblockdata1});
+                 }
+ 
+                 blockEntity.setBlockState(iblockdata);
