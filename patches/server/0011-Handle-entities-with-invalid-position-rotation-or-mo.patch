@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Sun, 20 Oct 2024 06:06:04 -0700
+Subject: [PATCH] Handle entities with invalid position, rotation, or motion
+
+Some world downloads have entities with NaN properties that we want to remove or reset back to valid states.
+
+diff --git a/src/main/java/io/papermc/paper/util/NanHelper.java b/src/main/java/io/papermc/paper/util/NanHelper.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f8175d644eee628f7c1097de26238f92f4699d8
+--- /dev/null
++++ b/src/main/java/io/papermc/paper/util/NanHelper.java
+@@ -0,0 +1,29 @@
++package io.papermc.paper.util;
++
++public class NanHelper {
++    public static double ensureNonNaN(double value) {
++        return Double.isNaN(value) ? 0.0D : value;
++    }
++
++    public static float ensureNonNaN(float value) {
++        return Float.isNaN(value) ? 0.0F : value;
++    }
++
++    public static boolean isInvalid(double... value) {
++        for (double v : value) {
++            if (Double.isNaN(v) || Double.isInfinite(v)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    public static boolean isInvalid(float... value) {
++        for (float v : value) {
++            if (Float.isNaN(v) || Float.isInfinite(v)) {
++                return true;
++            }
++        }
++        return false;
++    }
++}
+diff --git a/src/main/java/net/minecraft/world/entity/Entity.java b/src/main/java/net/minecraft/world/entity/Entity.java
+index 4b54d0ea31062972e68ee8fafe3cfaf68f65a5cd..6f184f8cbb7d2b86cf27221819375aa185f03c64 100644
+--- a/src/main/java/net/minecraft/world/entity/Entity.java
++++ b/src/main/java/net/minecraft/world/entity/Entity.java
+@@ -2571,18 +2571,31 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+     public void load(CompoundTag nbt) {
+         try {
+             ListTag nbttaglist = nbt.getList("Pos", 6);
++            double posX = nbttaglist.getDouble(0);
++            double posY = nbttaglist.getDouble(1);
++            double posZ = nbttaglist.getDouble(2);
++            if (io.papermc.paper.util.NanHelper.isInvalid(posX, posY, posZ)) {
++                // better to remove these than to potentially place an unbounded amount at 0,0
++                this.setRemoved(RemovalReason.DISCARDED);
++                return;
++            }
+             ListTag nbttaglist1 = nbt.getList("Motion", 6);
+             ListTag nbttaglist2 = nbt.getList("Rotation", 5);
+             double d0 = nbttaglist1.getDouble(0);
+             double d1 = nbttaglist1.getDouble(1);
+             double d2 = nbttaglist1.getDouble(2);
++            d0 = io.papermc.paper.util.NanHelper.ensureNonNaN(d0);
++            d1 = io.papermc.paper.util.NanHelper.ensureNonNaN(d1);
++            d2 = io.papermc.paper.util.NanHelper.ensureNonNaN(d2);
++            float yRot = io.papermc.paper.util.NanHelper.ensureNonNaN(nbttaglist2.getFloat(0));
++            float xRot = io.papermc.paper.util.NanHelper.ensureNonNaN(nbttaglist2.getFloat(1));
+ 
+             this.setDeltaMovement(Math.abs(d0) > 10.0D ? 0.0D : d0, Math.abs(d1) > 10.0D ? 0.0D : d1, Math.abs(d2) > 10.0D ? 0.0D : d2);
+             double d3 = 3.0000512E7D;
+ 
+             this.setPosRaw(Mth.clamp(nbttaglist.getDouble(0), -3.0000512E7D, 3.0000512E7D), Mth.clamp(nbttaglist.getDouble(1), -2.0E7D, 2.0E7D), Mth.clamp(nbttaglist.getDouble(2), -3.0000512E7D, 3.0000512E7D));
+-            this.setYRot(nbttaglist2.getFloat(0));
+-            this.setXRot(nbttaglist2.getFloat(1));
++            this.setYRot(yRot);
++            this.setXRot(xRot);
+             this.setOldPosAndRot();
+             this.setYHeadRot(this.getYRot());
+             this.setYBodyRot(this.getYRot());
