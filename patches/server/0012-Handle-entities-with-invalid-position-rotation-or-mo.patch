@@ -41,7 +41,7 @@ index 0000000000000000000000000000000000000000..4f8175d644eee628f7c1097de26238f9
 +    }
 +}
 diff --git a/src/main/java/net/minecraft/world/entity/Entity.java b/src/main/java/net/minecraft/world/entity/Entity.java
-index 4b54d0ea31062972e68ee8fafe3cfaf68f65a5cd..6f184f8cbb7d2b86cf27221819375aa185f03c64 100644
+index 4b54d0ea31062972e68ee8fafe3cfaf68f65a5cd..684e6ea4786b16260efc89347b15d1c6abb4582d 100644
 --- a/src/main/java/net/minecraft/world/entity/Entity.java
 +++ b/src/main/java/net/minecraft/world/entity/Entity.java
 @@ -2571,18 +2571,31 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
@@ -53,7 +53,7 @@ index 4b54d0ea31062972e68ee8fafe3cfaf68f65a5cd..6f184f8cbb7d2b86cf27221819375aa1
 +            double posZ = nbttaglist.getDouble(2);
 +            if (io.papermc.paper.util.NanHelper.isInvalid(posX, posY, posZ)) {
 +                // better to remove these than to potentially place an unbounded amount at 0,0
-+                this.setRemoved(RemovalReason.DISCARDED);
++                this.setRemoved(RemovalReason.DISCARDED, EntityRemoveEvent.Cause.DESPAWN);
 +                return;
 +            }
              ListTag nbttaglist1 = nbt.getList("Motion", 6);
