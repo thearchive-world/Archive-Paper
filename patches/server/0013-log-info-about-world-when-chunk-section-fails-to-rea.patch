@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Tue, 22 Oct 2024 22:47:42 -0700
+Subject: [PATCH] log info about world when chunk section fails to read
+
+
+diff --git a/src/main/java/net/minecraft/world/level/chunk/storage/ChunkSerializer.java b/src/main/java/net/minecraft/world/level/chunk/storage/ChunkSerializer.java
+index cfd41ebe7fb7d6306f613a34adc91a205937dc32..6c4a3b885764245ea258cac53581fa6d69049765 100644
+--- a/src/main/java/net/minecraft/world/level/chunk/storage/ChunkSerializer.java
++++ b/src/main/java/net/minecraft/world/level/chunk/storage/ChunkSerializer.java
+@@ -159,7 +159,8 @@ public class ChunkSerializer {
+                 if (nbttagcompound1.contains("block_states", 10)) {
+                     Codec<PalettedContainer<BlockState>> blockStateCodec = presetBlockStates == null ? ChunkSerializer.BLOCK_STATE_CODEC : PalettedContainer.codecRW(Block.BLOCK_STATE_REGISTRY, BlockState.CODEC, PalettedContainer.Strategy.SECTION_STATES, Blocks.AIR.defaultBlockState(), presetBlockStates);
+                     datapaletteblock = blockStateCodec.parse(NbtOps.INSTANCE, nbttagcompound1.getCompound("block_states")).promotePartial((s) -> {
+-                        ChunkSerializer.logErrors(chunkPos, b0, s);
++                        ChunkSerializer.LOGGER.error("Recoverable errors when loading block states from section in world: {} [{}, {}, {}]: {}", new Object[]{key, chunkPos.x, b0, chunkPos.z, s});
++                        // ChunkSerializer.logErrors(chunkPos, b0, s);
+                     }).getOrThrow(ChunkSerializer.ChunkReadException::new);
+                 } else {
+                     datapaletteblock = new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, Blocks.AIR.defaultBlockState(), PalettedContainer.Strategy.SECTION_STATES, presetBlockStates);
+@@ -170,7 +171,8 @@ public class ChunkSerializer {
+ 
+                 if (nbttagcompound1.contains("biomes", 10)) {
+                     object = codec.parse(NbtOps.INSTANCE, nbttagcompound1.getCompound("biomes")).promotePartial((s) -> { // CraftBukkit - decompile error
+-                        ChunkSerializer.logErrors(chunkPos, b0, s);
++                        ChunkSerializer.LOGGER.error("Recoverable errors when loading biomes from section in world: {} [{}, {}, {}]: {}", new Object[]{key, chunkPos.x, b0, chunkPos.z, s});
++                        // ChunkSerializer.logErrors(chunkPos, b0, s);
+                     }).getOrThrow(ChunkSerializer.ChunkReadException::new);
+                 } else {
+                     object = new PalettedContainer<>(iregistry.asHolderIdMap(), iregistry.getHolderOrThrow(Biomes.PLAINS), PalettedContainer.Strategy.SECTION_BIOMES, null); // Paper - Anti-Xray - Add preset biomes
