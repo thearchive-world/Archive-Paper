@@ -48,12 +48,16 @@ out/
 # other stuff
 run/
 
-Archive-API/
-Archive-Server/
+Archive-Server/build.gradle.kts
+Archive-Server/src/minecraft
+Archive-API/build.gradle.kts
+/paper-server
+/paper-api
+/paper-api-generator
+
 Paperclip.jar
 paperclip.jar
 paperclip-*.jar
 paperclip.properties
-paper-api-generator/
 
 !gradle/wrapper/gradle-wrapper.jar

@@ -4,16 +4,28 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 plugins {
     java
     `maven-publish`
-    id("io.papermc.paperweight.patcher") version "1.7.1"
+    id("io.papermc.paperweight.patcher") version "2.0.0-beta.14"
 }
 
-allprojects {
-    apply(plugin = "java")
-    apply(plugin = "maven-publish")
+paperweight {
+    upstreams.paper {
+        ref = providers.gradleProperty("paperRef")
 
-    java {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(21)
+        patchFile {
+            path = "paper-server/build.gradle.kts"
+            outputFile = file("Archive-Server/build.gradle.kts")
+            patchFile = file("Archive-Server/build.gradle.kts.patch")
+        }
+        patchFile {
+            path = "paper-api/build.gradle.kts"
+            outputFile = file("Archive-API/build.gradle.kts")
+            patchFile = file("Archive-API/build.gradle.kts.patch")
+        }
+        patchDir("paperApi") {
+            upstreamPath = "paper-api"
+            excludes = setOf("build.gradle.kts")
+            patchesDir = file("Archive-API/paper-patches")
+            outputDir = file("paper-api")
         }
     }
 }
@@ -21,9 +33,28 @@ allprojects {
 val paperMavenPublicUrl = "https://repo.papermc.io/repository/maven-public/"
 
 subprojects {
+    apply(plugin = "java-library")
+    apply(plugin = "maven-publish")
+
+    extensions.configure<JavaPluginExtension> {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+
+    repositories {
+        mavenCentral()
+        maven(paperMavenPublicUrl)
+    }
+
+    tasks.withType<AbstractArchiveTask>().configureEach {
+        isPreserveFileTimestamps = false
+        isReproducibleFileOrder = true
+    }
     tasks.withType<JavaCompile> {
         options.encoding = Charsets.UTF_8.name()
         options.release = 21
+        options.isFork = true
     }
     tasks.withType<Javadoc> {
         options.encoding = Charsets.UTF_8.name()
@@ -39,47 +70,14 @@ subprojects {
         }
     }
 
-    repositories {
-        mavenCentral()
-        maven(paperMavenPublicUrl)
-    }
-}
-
-repositories {
-    mavenCentral()
-    maven(paperMavenPublicUrl) {
-        content {
-            onlyForConfigurations(
-                configurations.paperclip.name,
-            )
-        }
-    }
-}
-
-dependencies {
-    // paramMappings("net.fabricmc:yarn:1.21.1+build.3:mergedv2")
-    remapper("net.fabricmc:tiny-remapper:0.10.3:fat")
-    decompiler("org.vineflower:vineflower:1.10.1")
-    paperclip("io.papermc:paperclip:3.0.3")
-}
-
-paperweight {
-    serverProject = project(":archive-server")
-    remapRepo = paperMavenPublicUrl
-    decompileRepo = paperMavenPublicUrl
-    usePaperUpstream(providers.gradleProperty("paperRef")) {
-        withPaperPatcher {
-            apiPatchDir.set(layout.projectDirectory.dir("patches/api"))
-            apiOutputDir.set(layout.projectDirectory.dir("Archive-API"))
-
-            serverPatchDir.set(layout.projectDirectory.dir("patches/server"))
-            serverOutputDir.set(layout.projectDirectory.dir("Archive-Server"))
-        }
-        patchTasks.register("generatedApi") {
-            isBareDirectory = true
-            upstreamDirPath = "paper-api-generator/generated"
-            patchDir = layout.projectDirectory.dir("patches/generatedApi")
-            outputDir = layout.projectDirectory.dir("paper-api-generator/generated")
+    extensions.configure<PublishingExtension> {
+        repositories {
+            /*
+            maven("https://repo.papermc.io/repository/maven-snapshots/") {
+                name = "paperSnapshots"
+                credentials(PasswordCredentials::class)
+            }
+             */
         }
     }
 }

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Sat, 15 Feb 2025 23:41:46 -0800
+Subject: [PATCH] Skip chunk save serialization
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+index e4a5fa25ed368fc4662c30934da2963ef446d782..7d4b44c38065faf51fbaace09536fed8d5d5ced8 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+@@ -1740,6 +1740,13 @@ public final class NewChunkHolder {
+     }
+ 
+     private boolean saveChunk(final ChunkAccess chunk, final boolean unloading) {
++        // The Archive - Skip chunk serialization
++        if (true) {
++            if (unloading) {
++                this.completeAsyncUnloadDataSave(MoonriseRegionFileIO.RegionFileType.CHUNK_DATA, null);
++            }
++            return false;
++        }
+         if (!chunk.isUnsaved()) {
+             if (unloading) {
+                 this.completeAsyncUnloadDataSave(MoonriseRegionFileIO.RegionFileType.CHUNK_DATA, null);

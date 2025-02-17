@@ -2,25 +2,18 @@ name: Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+\+1.21.1'
+      - '[0-9]+.[0-9]+.[0-9]+\+1.21.4'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        java: [21]
-      fail-fast: true
     steps:
       - uses: actions/checkout@v4
-      - name: JDK ${{ matrix.java }}
+      - name: JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ matrix.java }}
+          java-version: 21
           distribution: 'temurin'
-
-      - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
 
       - name: Elevate wrapper permissions
         run: chmod +x ./gradlew
@@ -32,7 +25,7 @@ jobs:
         run: |
           git config --global user.email "no-reply@github.com"
           git config --global user.name "Github Actions"
-          ./gradlew applyPatches --stacktrace
+          ./gradlew applyAllPatches --stacktrace
 
       - name: Build
         run: ./gradlew build --stacktrace
@@ -41,17 +34,17 @@ jobs:
         run: ./gradlew createMojmapPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
-        run: mv build/libs/archive-paper-paperclip*.jar build/libs/archive-paper-${{ github.ref_name }}.jar
+        run: mv Archive-Server/build/libs/archive-paperclip*.jar Archive-Server/build/libs/archive-paper-${{ github.ref_name }}.jar
 
       - name: Upload Paperclip Jar
         uses: actions/upload-artifact@v4
         with:
           name: paperclip
-          path: build/libs/archive-paper-${{ github.ref_name }}.jar
+          path: Archive-Server/build/libs/archive-paper-${{ github.ref_name }}.jar
 
       - name: Release Paperclip Artifact
         uses: ncipollo/release-action@v1
         with:
           name: The Archive Paper ${{ github.ref_name }}
-          artifacts: build/libs/archive-paper-${{ github.ref_name }}.jar
+          artifacts: Archive-Server/build/libs/archive-paper-${{ github.ref_name }}.jar
           makeLatest: true

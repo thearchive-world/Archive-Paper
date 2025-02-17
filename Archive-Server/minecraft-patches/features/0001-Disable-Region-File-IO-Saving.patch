@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Sat, 15 Feb 2025 23:22:20 -0800
+Subject: [PATCH] Disable Region File IO Saving
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java b/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
+index 98fbc5c8044bd945d64569f13412a6e7e49a4e7f..311f918244f3c7f715da7712752f4d2c277e09f7 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
+@@ -493,6 +493,7 @@ public final class MoonriseRegionFileIO {
+ 
+     private static void scheduleSave(final ServerLevel world, final int chunkX, final int chunkZ, final Consumer<BiConsumer<CompoundTag, Throwable>> scheduler,
+                                      final PrioritisedExecutor.PrioritisedTask writeTask, final RegionFileType type, final Priority priority) {
++        if (true) return; // The Archive - don't save world data
+         final RegionDataController taskController = getControllerFor(world, type);
+ 
+         final boolean[] created = new boolean[1];
+@@ -868,7 +869,7 @@ public final class MoonriseRegionFileIO {
+             throw new IOException(ex);
+         }
+     }
+-    
++
+     private static final class CancellableRead implements Cancellable {
+ 
+         private BiConsumer<CompoundTag, Throwable> callback;

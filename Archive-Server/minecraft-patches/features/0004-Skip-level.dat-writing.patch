@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Sat, 15 Feb 2025 23:44:49 -0800
+Subject: [PATCH] Skip level.dat writing
+
+
+diff --git a/net/minecraft/world/level/storage/LevelStorageSource.java b/net/minecraft/world/level/storage/LevelStorageSource.java
+index de43e54698125ce9f319d4889dd49f7029fe95e0..b8c7c979b8fc120d598c152a73f1db9a831b2942 100644
+--- a/net/minecraft/world/level/storage/LevelStorageSource.java
++++ b/net/minecraft/world/level/storage/LevelStorageSource.java
+@@ -511,6 +511,8 @@ public class LevelStorageSource {
+         }
+ 
+         public void saveDataTag(RegistryAccess registries, WorldData serverConfiguration, @Nullable CompoundTag hostPlayerNBT) {
++            // The Archive - don't save level.dat
++            if (true) return;
+             CompoundTag compoundTag = serverConfiguration.createTag(registries, hostPlayerNBT);
+             CompoundTag compoundTag1 = new CompoundTag();
+             compoundTag1.put("Data", compoundTag);
+@@ -518,6 +520,8 @@ public class LevelStorageSource {
+         }
+ 
+         private void saveLevelData(CompoundTag tag) {
++            // The Archive - don't save level.dat
++            if (true) return;
+             Path path = this.levelDirectory.path();
+ 
+             try {

@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Sun, 16 Feb 2025 00:12:56 -0800
+Subject: [PATCH] Patch player respawn position chunk load process hang
+
+The base logic attempts to search for a random location within the configured spawn radius
+
+However this also assumes it can create new chunks, which in our case it can't. So this process can loop while the process hangs and the server eventually crashes.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 57d432dc9e8d8e9a3e088e7c40b35178c30fe786..6fd6510d3ffa0a4230ad52b47b6f2301bde88dc2 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -464,6 +464,8 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+             int coprime = this.getCoprime(i);
+             int randomInt = RandomSource.create().nextInt(i);
+ 
++            coprime = 0; // Archive - Disable respawn pos adjustment
++
+             for (int i1 = 0; i1 < i; i1++) {
+                 int i2 = (randomInt + coprime * i1) % i;
+                 int i3 = i2 % (max * 2 + 1);
