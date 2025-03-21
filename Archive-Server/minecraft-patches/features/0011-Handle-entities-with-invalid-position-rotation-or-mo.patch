@@ -6,7 +6,7 @@ Subject: [PATCH] Handle entities with invalid position, rotation, or motion
 Some world downloads have entities with NaN properties that we want to remove or reset back to valid states.
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index b268b428ec8f2e50737e1dd5cc705c537322433c..edbf914f9e11410b9c90efe2a258aedff27f89a0 100644
+index b2b61203438bb1fad1ee807729781718d2467155..40b32ca68a3b689192dd7ceb593f2e8351828306 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
 @@ -133,6 +133,7 @@ import net.minecraft.world.phys.shapes.VoxelShape;
@@ -17,7 +17,7 @@ index b268b428ec8f2e50737e1dd5cc705c537322433c..edbf914f9e11410b9c90efe2a258aedf
  import org.slf4j.Logger;
  
  public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess, ScoreHolder, ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity, ca.spottedleaf.moonrise.patches.entity_tracker.EntityTrackerEntity {  // Paper - rewrite chunk system // Paper - optimise entity tracker
-@@ -2533,11 +2534,25 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+@@ -2534,11 +2535,25 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
      public void load(CompoundTag compound) {
          try {
              ListTag list = compound.getList("Pos", 6);
@@ -43,7 +43,7 @@ index b268b428ec8f2e50737e1dd5cc705c537322433c..edbf914f9e11410b9c90efe2a258aedf
              this.setDeltaMovement(
                  Math.abs(_double) > 10.0 ? 0.0 : _double, Math.abs(_double1) > 10.0 ? 0.0 : _double1, Math.abs(_double2) > 10.0 ? 0.0 : _double2
              );
-@@ -2548,8 +2563,8 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+@@ -2549,8 +2564,8 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
                  Mth.clamp(list.getDouble(1), -2.0E7, 2.0E7),
                  Mth.clamp(list.getDouble(2), -3.0000512E7, 3.0000512E7)
              );
