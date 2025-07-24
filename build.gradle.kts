@@ -4,7 +4,7 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 plugins {
     java
     `maven-publish`
-    id("io.papermc.paperweight.patcher") version "2.0.0-beta.16"
+    id("io.papermc.paperweight.patcher") version "2.0.0-beta.18"
 }
 
 paperweight {
@@ -13,18 +13,18 @@ paperweight {
 
         patchFile {
             path = "paper-server/build.gradle.kts"
-            outputFile = file("Archive-Server/build.gradle.kts")
-            patchFile = file("Archive-Server/build.gradle.kts.patch")
+            outputFile = file("archive-server/build.gradle.kts")
+            patchFile = file("archive-server/build.gradle.kts.patch")
         }
         patchFile {
             path = "paper-api/build.gradle.kts"
-            outputFile = file("Archive-API/build.gradle.kts")
-            patchFile = file("Archive-API/build.gradle.kts.patch")
+            outputFile = file("archive-api/build.gradle.kts")
+            patchFile = file("archive-api/build.gradle.kts.patch")
         }
         patchDir("paperApi") {
             upstreamPath = "paper-api"
             excludes = setOf("build.gradle.kts")
-            patchesDir = file("Archive-API/paper-patches")
+            patchesDir = file("archive-api/paper-patches")
             outputDir = file("paper-api")
         }
     }
@@ -55,6 +55,7 @@ subprojects {
         options.encoding = Charsets.UTF_8.name()
         options.release = 21
         options.isFork = true
+        options.compilerArgs.addAll(listOf("-Xlint:-deprecation", "-Xlint:-removal"))
     }
     tasks.withType<Javadoc> {
         options.encoding = Charsets.UTF_8.name()
@@ -68,6 +69,10 @@ subprojects {
             exceptionFormat = TestExceptionFormat.FULL
             events(TestLogEvent.STANDARD_OUT)
         }
+    }
+    tasks.withType<AbstractArchiveTask>().configureEach {
+        isPreserveFileTimestamps = false
+        isReproducibleFileOrder = true
     }
 
     extensions.configure<PublishingExtension> {

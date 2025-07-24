@@ -2,7 +2,7 @@ name: Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+\+1.21.4'
+      - '[0-9]+.[0-9]+.[0-9]+\+1.21.8'
 
 jobs:
   build:
@@ -34,17 +34,17 @@ jobs:
         run: ./gradlew createMojmapPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
-        run: mv Archive-Server/build/libs/archive-paperclip*.jar Archive-Server/build/libs/archive-paper-${{ github.ref_name }}.jar
+        run: mv archive-server/build/libs/archive-paperclip*.jar archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
 
       - name: Upload Paperclip Jar
         uses: actions/upload-artifact@v4
         with:
           name: paperclip
-          path: Archive-Server/build/libs/archive-paper-${{ github.ref_name }}.jar
+          path: archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
 
       - name: Release Paperclip Artifact
         uses: ncipollo/release-action@v1
         with:
           name: The Archive Paper ${{ github.ref_name }}
-          artifacts: Archive-Server/build/libs/archive-paper-${{ github.ref_name }}.jar
+          artifacts: archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
           makeLatest: true

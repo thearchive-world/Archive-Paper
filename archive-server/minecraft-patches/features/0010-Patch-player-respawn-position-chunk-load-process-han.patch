@@ -8,10 +8,10 @@ The base logic attempts to search for a random location within the configured sp
 However this also assumes it can create new chunks, which in our case it can't. So this process can loop while the process hangs and the server eventually crashes.
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 3de65c4025be91d938a350c884975cb6edc234d3..73911a1783524a3f9ba26c424b65f443831c68ef 100644
+index 37c0a84758a1526791913898358659de202fa19f..2bfe61a1be93de497bd3feda96a23784b5ef88aa 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -471,6 +471,8 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -499,6 +499,8 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
              int coprime = this.getCoprime(i);
              int randomInt = RandomSource.create().nextInt(i);
  

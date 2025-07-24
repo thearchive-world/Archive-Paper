@@ -5,10 +5,10 @@ Subject: [PATCH] mute setBlockEntity logspam
 
 
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index 761fdcd4a4e18f45547afd8edff44f61c6eeacb4..5b8162de96b862b9edd6dd808d838c4efad358d7 100644
+index 75578e6ed7233a03d9b6cd3c6d3997f1c6148392..830389b2b7694588a213987133902f9123352640 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -517,6 +517,7 @@ public class LevelChunk extends ChunkAccess implements ca.spottedleaf.moonrise.p
+@@ -528,6 +528,7 @@ public class LevelChunk extends ChunkAccess implements ca.spottedleaf.moonrise.p
          BlockPos blockPos = blockEntity.getBlockPos();
          BlockState blockState = this.getBlockState(blockPos);
          if (!blockState.hasBlockEntity()) {
@@ -16,7 +16,7 @@ index 761fdcd4a4e18f45547afd8edff44f61c6eeacb4..5b8162de96b862b9edd6dd808d838c4e
              // Paper start - ServerExceptionEvent
              com.destroystokyo.paper.exception.ServerInternalException e = new com.destroystokyo.paper.exception.ServerInternalException(
                  "Trying to set block entity %s at position %s, but state %s does not allow it".formatted(blockEntity, blockPos, blockState)
-@@ -528,12 +529,12 @@ public class LevelChunk extends ChunkAccess implements ca.spottedleaf.moonrise.p
+@@ -539,12 +540,12 @@ public class LevelChunk extends ChunkAccess implements ca.spottedleaf.moonrise.p
              BlockState blockState1 = blockEntity.getBlockState();
              if (blockState != blockState1) {
                  if (!blockEntity.getType().isValid(blockState)) {

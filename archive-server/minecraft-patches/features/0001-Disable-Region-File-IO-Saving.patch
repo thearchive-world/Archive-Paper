@@ -5,7 +5,7 @@ Subject: [PATCH] Disable Region File IO Saving
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java b/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
-index 98fbc5c8044bd945d64569f13412a6e7e49a4e7f..311f918244f3c7f715da7712752f4d2c277e09f7 100644
+index f5ed467c0880e4bcdf1b9ae773a5aac21c4381c3..989717c2ad2b2a4435ff120a162dcab0bc8b9220 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
 @@ -493,6 +493,7 @@ public final class MoonriseRegionFileIO {
@@ -16,12 +16,3 @@ index 98fbc5c8044bd945d64569f13412a6e7e49a4e7f..311f918244f3c7f715da7712752f4d2c
          final RegionDataController taskController = getControllerFor(world, type);
  
          final boolean[] created = new boolean[1];
-@@ -868,7 +869,7 @@ public final class MoonriseRegionFileIO {
-             throw new IOException(ex);
-         }
-     }
--    
-+
-     private static final class CancellableRead implements Cancellable {
- 
-         private BiConsumer<CompoundTag, Throwable> callback;

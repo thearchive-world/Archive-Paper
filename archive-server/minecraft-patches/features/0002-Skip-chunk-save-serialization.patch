@@ -5,10 +5,10 @@ Subject: [PATCH] Skip chunk save serialization
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
-index e4a5fa25ed368fc4662c30934da2963ef446d782..7d4b44c38065faf51fbaace09536fed8d5d5ced8 100644
+index 2cc0e7c72d2b2e562452138f2b41fd1dcaf0570a..23c174d46024a7e8e4e2406a8a66719bbcbcc6ee 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
-@@ -1740,6 +1740,13 @@ public final class NewChunkHolder {
+@@ -1742,6 +1742,13 @@ public final class NewChunkHolder {
      }
  
      private boolean saveChunk(final ChunkAccess chunk, final boolean unloading) {

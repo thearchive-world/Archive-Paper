@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Wed, 23 Jul 2025 16:06:20 -0700
+Subject: [PATCH] Allow loading tile entities from outside chunk
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+index 2d24d03bbdb5ee0d862cbfff2219f58afffafe12..5cbdced0686d670c39927886f2ad2cc39d868c1f 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -365,10 +365,10 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+             }
+ 
+             if (forChunk != null && !entity.chunkPosition().equals(forChunk)) {
+-                LOGGER.warn("Root entity " + entity + " is outside of serialized chunk " + forChunk);
++                // LOGGER.warn("Root entity " + entity + " is outside of serialized chunk " + forChunk);
+                 // can't set removed here, as we may not own the chunk position
+                 // skip the entity
+-                continue;
++                // continue;
+             }
+ 
+             final Vec3 rootPosition = entity.position();

@@ -48,9 +48,9 @@ out/
 # other stuff
 run/
 
-Archive-Server/build.gradle.kts
-Archive-Server/src/minecraft
-Archive-API/build.gradle.kts
+archive-server/build.gradle.kts
+archive-server/src/minecraft
+archive-api/build.gradle.kts
 /paper-server
 /paper-api
 /paper-api-generator
