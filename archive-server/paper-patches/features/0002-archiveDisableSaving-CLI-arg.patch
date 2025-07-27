@@ -5,15 +5,19 @@ Subject: [PATCH] `archiveDisableSaving` CLI arg
 
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
-index 7675acdca2162e403f4ff523bcdd6efe0cb42d49..62993aea31eda6717cdc1c47272a926fc3d7a814 100644
+index 7675acdca2162e403f4ff523bcdd6efe0cb42d49..53e1eeb3add1d6fef7e365fba2eed0eff66b65ba 100644
 --- a/src/main/java/org/bukkit/craftbukkit/Main.java
 +++ b/src/main/java/org/bukkit/craftbukkit/Main.java
-@@ -169,6 +169,8 @@ public class Main {
+@@ -169,6 +169,12 @@ public class Main {
                          .ofType(String.class)
                          .defaultsTo("Unknown Server")
                          .describedAs("Name");
 +
-+                this.accepts("archiveDisableSaving", "Disables world and entity saving, saving is disabled by default unless forceUpgrade is set");
++                this.accepts("archiveDisableSaving", "Disables world and entity saving, saving is disabled by default unless forceUpgrade is set")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Disable saving");
              }
          };
  
