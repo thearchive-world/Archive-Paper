@@ -5,7 +5,7 @@ Subject: [PATCH] Skip level.dat writing
 
 
 diff --git a/net/minecraft/world/level/storage/LevelStorageSource.java b/net/minecraft/world/level/storage/LevelStorageSource.java
-index 3b40822ea6ec9783fe3cb8eaba069a8d626d8382..138c52dfb8ed04564fd5f33c2c39ddf8e82f35ad 100644
+index 3b40822ea6ec9783fe3cb8eaba069a8d626d8382..8766fa81a71664caee903b1d9b3140de5a44217e 100644
 --- a/net/minecraft/world/level/storage/LevelStorageSource.java
 +++ b/net/minecraft/world/level/storage/LevelStorageSource.java
 @@ -512,6 +512,8 @@ public class LevelStorageSource {
@@ -13,7 +13,7 @@ index 3b40822ea6ec9783fe3cb8eaba069a8d626d8382..138c52dfb8ed04564fd5f33c2c39ddf8
  
          public void saveDataTag(RegistryAccess registries, WorldData serverConfiguration, @Nullable CompoundTag hostPlayerNBT) {
 +            // The Archive - don't save level.dat
-+            if (true) return;
++            if (archive.ArchiveSettings.disableSaving()) return;
              CompoundTag compoundTag = serverConfiguration.createTag(registries, hostPlayerNBT);
              CompoundTag compoundTag1 = new CompoundTag();
              compoundTag1.put("Data", compoundTag);
@@ -22,7 +22,7 @@ index 3b40822ea6ec9783fe3cb8eaba069a8d626d8382..138c52dfb8ed04564fd5f33c2c39ddf8
  
          private void saveLevelData(CompoundTag tag) {
 +            // The Archive - don't save level.dat
-+            if (true) return;
++            if (archive.ArchiveSettings.disableSaving()) return;
              Path path = this.levelDirectory.path();
  
              try {

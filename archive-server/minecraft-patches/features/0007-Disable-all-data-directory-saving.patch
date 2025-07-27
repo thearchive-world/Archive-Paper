@@ -5,7 +5,7 @@ Subject: [PATCH] Disable all data directory saving
 
 
 diff --git a/net/minecraft/world/level/storage/DimensionDataStorage.java b/net/minecraft/world/level/storage/DimensionDataStorage.java
-index 1ff0b19a077333ad9da9cab7f5a891eeaa2109a9..5bc94b9bd09d43582563e35289abb959a83dca1e 100644
+index 1ff0b19a077333ad9da9cab7f5a891eeaa2109a9..ed201291d0207b32c1766910488c3dd35c8e8edf 100644
 --- a/net/minecraft/world/level/storage/DimensionDataStorage.java
 +++ b/net/minecraft/world/level/storage/DimensionDataStorage.java
 @@ -144,6 +144,8 @@ public class DimensionDataStorage implements AutoCloseable {
@@ -13,7 +13,7 @@ index 1ff0b19a077333ad9da9cab7f5a891eeaa2109a9..5bc94b9bd09d43582563e35289abb959
  
      public CompletableFuture<?> scheduleSave() {
 +        // The Archive - don't save data
-+        if (true) return CompletableFuture.completedFuture(null);
++        if (archive.ArchiveSettings.disableSaving()) return CompletableFuture.completedFuture(null);
          Map<SavedDataType<?>, CompoundTag> map = this.collectDirtyTagsToSave();
          if (map.isEmpty()) {
              return CompletableFuture.completedFuture(null);

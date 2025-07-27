@@ -5,24 +5,24 @@ Subject: [PATCH] Skip entity save serialization
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
-index 25e35f127f6155b99ea8fec729e92e6259511702..ab762d71c49efc57d2f65bc0b5f6e7835397ee86 100644
+index d2a737008b4f0c1a04e92d27fe4e1ff50f5f6cdc..133cc947ec493bb0b1a6cb3072b70221103358de 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
-@@ -1791,6 +1791,8 @@ public final class NewChunkHolder {
+@@ -1796,6 +1796,8 @@ public final class NewChunkHolder {
      private boolean lastEntitySaveNull;
      private CompoundTag lastEntityUnload;
      private boolean saveEntities(final ChunkEntitySlices entities, final boolean unloading) {
 +        // The Archive - skip entity save
-+        if (true) return false;
++        if (archive.ArchiveSettings.disableSaving()) return false;
          try {
              CompoundTag mergeFrom = null;
              if (entities.isTransient()) {
-@@ -1833,6 +1835,8 @@ public final class NewChunkHolder {
+@@ -1838,6 +1840,8 @@ public final class NewChunkHolder {
  
      private boolean lastPoiSaveNull;
      private boolean savePOI(final PoiChunk poi, final boolean unloading) {
 +        // The Archive - skip POI save
-+        if (true) return false;
++        if (archive.ArchiveSettings.disableSaving()) return false;
          try {
              final CompoundTag save = poi.save();
              poi.setDirty(false);
