@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rfresh2 <89827146+rfresh2@users.noreply.github.com>
+Date: Sat, 26 Jul 2025 19:00:56 -0700
+Subject: [PATCH] log archive saving state on startup
+
+
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index 98927d4a5fba2a0dcdb147ac10b82c3286ccdc6b..708f057b4c08cd12a1e53cf37c5fb252958305be 100644
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -257,6 +257,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+             LOGGER.warn("To change this, set \"online-mode\" to \"true\" in the server.properties file.");
+         }
+ 
++        LOGGER.info("[The Archive] World data saving is {}.", archive.ArchiveSettings.disableSaving() ? "disabled" : "enabled");
++
+         // CraftBukkit start
+         /*
+         if (this.convertOldUsers()) {
