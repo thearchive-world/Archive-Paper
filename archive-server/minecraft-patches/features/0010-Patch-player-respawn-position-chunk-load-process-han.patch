@@ -7,16 +7,16 @@ The base logic attempts to search for a random location within the configured sp
 
 However this also assumes it can create new chunks, which in our case it can't. So this process can loop while the process hangs and the server eventually crashes.
 
-diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 37c0a84758a1526791913898358659de202fa19f..2bfe61a1be93de497bd3feda96a23784b5ef88aa 100644
---- a/net/minecraft/server/level/ServerPlayer.java
-+++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -499,6 +499,8 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
-             int coprime = this.getCoprime(i);
-             int randomInt = RandomSource.create().nextInt(i);
+diff --git a/net/minecraft/server/level/PlayerSpawnFinder.java b/net/minecraft/server/level/PlayerSpawnFinder.java
+index f637d14b0188728192b543d7841e99a98f0c5269..73fb2c73133aae772d196d81d750e2b492366d3f 100644
+--- a/net/minecraft/server/level/PlayerSpawnFinder.java
++++ b/net/minecraft/server/level/PlayerSpawnFinder.java
+@@ -43,7 +43,7 @@ public class PlayerSpawnFinder {
+         this.radius = radius;
+         long l = radius * 2L + 1L;
+         this.candidateCount = (int)Math.min(1024L, l * l);
+-        this.coprime = getCoprime(this.candidateCount);
++        this.coprime = 0; // Archive - Disable respawn pos adjustment
+         this.offset = RandomSource.create().nextInt(this.candidateCount);
+     }
  
-+            coprime = 0; // Archive - Disable respawn pos adjustment
-+
-             for (int i1 = 0; i1 < i; i1++) {
-                 int i2 = (randomInt + coprime * i1) % i;
-                 int i3 = i2 % (max * 2 + 1);

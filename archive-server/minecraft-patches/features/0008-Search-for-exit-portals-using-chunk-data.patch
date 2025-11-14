@@ -5,16 +5,16 @@ Subject: [PATCH] Search for exit portals using chunk data
 
 
 diff --git a/net/minecraft/world/level/block/NetherPortalBlock.java b/net/minecraft/world/level/block/NetherPortalBlock.java
-index 6c5629a6f5f91496a55eb0bf281ceae1567915b1..cc76c0f0370d66c3c3ae56e7579b3bff86d167e7 100644
+index d3f0a61c0c91d3a6a1dc4e59d57743ba89a9c19a..5be6ac18f1073a728da4eac95be1d2aac4b3f109 100644
 --- a/net/minecraft/world/level/block/NetherPortalBlock.java
 +++ b/net/minecraft/world/level/block/NetherPortalBlock.java
 @@ -179,7 +179,8 @@ public class NetherPortalBlock extends Block implements Portal {
  
      @Nullable
-     private TeleportTransition getExitPortal(ServerLevel level, Entity entity, BlockPos pos, BlockPos exitPos, boolean isNether, WorldBorder worldBorder, int searchRadius, boolean canCreatePortal, int createRadius) { // CraftBukkit
--        Optional<BlockPos> optional = level.getPortalForcer().findClosestPortalPosition(exitPos, worldBorder, searchRadius); // CraftBukkit
-+        // Optional<BlockPos> optional = level.getPortalForcer().findClosestPortalPosition(exitPos, worldBorder, searchRadius); // CraftBukkit
-+        Optional<BlockPos> optional = archive.PortalScanner.findNearestPortal(level, exitPos, searchRadius);
+     private TeleportTransition getExitPortal(ServerLevel level, Entity entity, BlockPos pos, BlockPos exitPos, WorldBorder worldBorder, org.bukkit.craftbukkit.event.PortalEventResult result) { // CraftBukkit
+-        Optional<BlockPos> optional = level.getPortalForcer().findClosestPortalPosition(exitPos, worldBorder, result.searchRadius()); // CraftBukkit
++        // The Archive - Search for exit portals from chunk data instead of POI
++        Optional<BlockPos> optional = archive.PortalScanner.findNearestPortal(level, exitPos, result.searchRadius());
          BlockUtil.FoundRectangle largestRectangleAround;
          TeleportTransition.PostTeleportTransition postTeleportTransition;
          if (optional.isPresent()) {

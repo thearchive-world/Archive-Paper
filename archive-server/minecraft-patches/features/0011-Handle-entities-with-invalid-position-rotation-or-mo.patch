@@ -5,10 +5,10 @@ Subject: [PATCH] Handle entities with invalid position, rotation, or motion
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 70b6ea8ab35e88989b5b1f5ffd64490a9d743b56..730d0cdbb8e065e25f5dfde1719eea411c01179f 100644
+index 2e3e038874757049445a91bf590d5a1a427a3f6d..02d7e2af6aa2240e83829dc5c0069928a03a39b6 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -144,6 +144,7 @@ import net.minecraft.world.scores.PlayerTeam;
+@@ -146,6 +146,7 @@ import net.minecraft.world.scores.PlayerTeam;
  import net.minecraft.world.scores.ScoreHolder;
  import net.minecraft.world.scores.Team;
  import net.minecraft.world.waypoints.WaypointTransmitter;
@@ -16,7 +16,7 @@ index 70b6ea8ab35e88989b5b1f5ffd64490a9d743b56..730d0cdbb8e065e25f5dfde1719eea41
  import org.jetbrains.annotations.Contract;
  import org.slf4j.Logger;
  
-@@ -2596,8 +2597,12 @@ public abstract class Entity implements SyncedDataHolder, Nameable, EntityAccess
+@@ -2645,8 +2646,12 @@ public abstract class Entity implements SyncedDataHolder, DebugValueSource, Name
      public void load(ValueInput input) {
          try {
              Vec3 vec3 = input.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);

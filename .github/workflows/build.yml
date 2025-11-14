@@ -42,11 +42,11 @@ jobs:
         run: ./gradlew createMojmapPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
-        run: mv archive-server/build/libs/archive-paperclip*.jar archive-server/build/libs/archive-paper-1.21.8.jar
+        run: mv archive-server/build/libs/archive-paperclip*.jar archive-server/build/libs/archive-paper-1.21.10.jar
 
       - name: Upload Paperclip Jar
         uses: actions/upload-artifact@v5
         with:
           name: paperclip
-          path: archive-server/build/libs/archive-paper-1.21.8.jar
+          path: archive-server/build/libs/archive-paper-1.21.10.jar
 
