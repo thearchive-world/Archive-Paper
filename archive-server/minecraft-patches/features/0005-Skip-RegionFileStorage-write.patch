@@ -5,10 +5,10 @@ Subject: [PATCH] Skip RegionFileStorage write
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/RegionFileStorage.java b/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
-index 8ea830f561f5b7d6ff6ca3c38adc7fe8e54e4cc7..17d503c77d5e1205d40ba2fffcf0e1e5f52a8ea4 100644
+index 1e9e061ec694ad64fc2724b83a66dfec7e069a43..c756a935725337d9f5fd00a431ab83dc930fc1cb 100644
 --- a/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
 +++ b/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
-@@ -411,6 +411,8 @@ public class RegionFileStorage implements AutoCloseable, ca.spottedleaf.moonrise
+@@ -410,6 +410,8 @@ public class RegionFileStorage implements AutoCloseable, ca.spottedleaf.moonrise
              if (chunkData == null) {
                  regionFile.clear(chunkPos);
              } else {

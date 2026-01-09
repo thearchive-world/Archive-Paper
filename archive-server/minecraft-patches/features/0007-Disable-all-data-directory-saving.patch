@@ -5,10 +5,10 @@ Subject: [PATCH] Disable all data directory saving
 
 
 diff --git a/net/minecraft/world/level/storage/DimensionDataStorage.java b/net/minecraft/world/level/storage/DimensionDataStorage.java
-index 1ff0b19a077333ad9da9cab7f5a891eeaa2109a9..ed201291d0207b32c1766910488c3dd35c8e8edf 100644
+index b932e6236975fd4a755bdbf4b7a958599383f3f8..106b46ba23cb2926f0b9ad98993423de111406b5 100644
 --- a/net/minecraft/world/level/storage/DimensionDataStorage.java
 +++ b/net/minecraft/world/level/storage/DimensionDataStorage.java
-@@ -144,6 +144,8 @@ public class DimensionDataStorage implements AutoCloseable {
+@@ -139,6 +139,8 @@ public class DimensionDataStorage implements AutoCloseable {
      }
  
      public CompletableFuture<?> scheduleSave() {

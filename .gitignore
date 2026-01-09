@@ -50,6 +50,7 @@ run/
 
 archive-server/build.gradle.kts
 archive-server/src/minecraft
+archive-server/logs
 archive-api/build.gradle.kts
 /paper-server
 /paper-api

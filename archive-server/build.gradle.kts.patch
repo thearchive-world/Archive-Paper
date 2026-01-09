@@ -1,6 +1,6 @@
 --- a/paper-server/build.gradle.kts
 +++ b/paper-server/build.gradle.kts
-@@ -23,6 +_,17 @@
+@@ -22,6 +_,17 @@
      minecraftVersion = providers.gradleProperty("mcVersion")
      gitFilePatches = false
  
@@ -17,7 +17,7 @@
 +
      spigot {
          enabled = true
-         buildDataRef = "42d18d4c4653ffc549778dbe223f6994a031d69e"
+         buildDataRef = "17f77cee7117ab9d6175f088ae8962bfd04e61a9"
 @@ -104,7 +_,19 @@
      }
  }
@@ -45,10 +45,10 @@
  dependencies {
 -    implementation(project(":paper-api"))
 +    implementation(project(":archive-api"))
-     implementation("ca.spottedleaf:concurrentutil:0.0.7")
+     implementation("ca.spottedleaf:concurrentutil:0.0.8")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -263,7 +_,7 @@
+@@ -264,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
  
@@ -57,3 +57,10 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
+@@ -274,6 +_,18 @@
+     main {
+         java {
+             srcDir(generatedDir)
+         }
+     }
+ }
