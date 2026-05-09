@@ -5,10 +5,10 @@ Subject: [PATCH] log archive saving state on startup
 
 
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index eb06d8f012684845146429832e977e6c1ddcd62b..87ca3609eb1336fb2cd2c68575fd15a73ed2a71a 100644
+index bc857ea218018e5cf651ecd81093b4b4e566034e..4ec54b908793845b8fc397dcbe4d6b5cccf13129 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -342,6 +342,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -363,6 +363,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
              LOGGER.warn("To change this, set \"online-mode\" to \"true\" in the server.properties file.");
          }
  

@@ -2,17 +2,20 @@ name: Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+\+1.21.11'
+      - '[0-9]+.[0-9]+.[0-9]+\+26.1.2'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
-      - name: JDK 21
+      - name: JDK 25
         uses: actions/setup-java@v5
         with:
-          java-version: 21
+          java-version: 25
           distribution: 'temurin'
 
       - name: Elevate wrapper permissions
@@ -31,16 +34,25 @@ jobs:
         run: ./gradlew build --stacktrace
 
       - name: Create Paperclip Jar
-        run: ./gradlew createMojmapPaperclipJar --stacktrace
+        run: ./gradlew createPaperclipJar --stacktrace
 
       - name: Rename Paperclip Jar
         run: mv archive-server/build/libs/archive-paperclip*.jar archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
 
-      - name: Upload Paperclip Jar
-        uses: actions/upload-artifact@v6
-        with:
-          name: paperclip
-          path: archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
+      - name: Read paper build info
+        id: paper
+        run: |
+          paperRef=$(grep '^paperRef=' gradle.properties | cut -d= -f2-)
+          mcVersion=$(grep '^mcVersion=' gradle.properties | cut -d= -f2-)
+          paperBuild=$(curl -sf --max-time 10 "https://fill.papermc.io/v3/projects/paper/versions/${mcVersion}/builds" \
+            | jq -r --arg ref "$paperRef" '.[] | select((.commits // [])[].sha == $ref) | .id' \
+            | head -1 || echo "")
+          {
+            echo "paperRef=$paperRef"
+            echo "mcVersion=$mcVersion"
+            echo "paperBuild=${paperBuild:-unknown}"
+            echo "shortSha=${paperRef:0:7}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Release Paperclip Artifact
         uses: ncipollo/release-action@v1
@@ -48,3 +60,11 @@ jobs:
           name: The Archive Paper ${{ github.ref_name }}
           artifacts: archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
           makeLatest: true
+          body: |
+            Built against **Paper ${{ steps.paper.outputs.mcVersion }} build #${{ steps.paper.outputs.paperBuild }}** ([`${{ steps.paper.outputs.shortSha }}`](https://github.com/PaperMC/Paper/commit/${{ steps.paper.outputs.paperRef }}))
+
+            Archive-Paper does not run Mojang's world upgrader on 26.1. It silently exits during the dimensions-folder migration.
+
+            Run vanilla Paper once on the world to migrate, then switch to archive-paper.
+
+            The `--forceUpgrade` flag does not work on 26.1.

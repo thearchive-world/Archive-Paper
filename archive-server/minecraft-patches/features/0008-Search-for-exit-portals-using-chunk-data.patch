@@ -5,17 +5,17 @@ Subject: [PATCH] Search for exit portals using chunk data
 
 
 diff --git a/net/minecraft/world/level/block/NetherPortalBlock.java b/net/minecraft/world/level/block/NetherPortalBlock.java
-index 653b72855197733b33e310b0ccd4fbf04e22e95f..7970c425d9ae05958d3dbcc4bebdf4759f1c3dcb 100644
+index b66aa14aea47e3b10c3e28cf25a64be550a8f5e0..b66bb2acefa735d5499d593cb49e389b4ddc34a2 100644
 --- a/net/minecraft/world/level/block/NetherPortalBlock.java
 +++ b/net/minecraft/world/level/block/NetherPortalBlock.java
-@@ -176,7 +176,9 @@ public class NetherPortalBlock extends Block implements Portal {
-     private @Nullable TeleportTransition getExitPortal(
-         ServerLevel level, Entity entity, BlockPos pos, BlockPos exitPos, WorldBorder worldBorder, org.bukkit.craftbukkit.event.PortalEventResult result // CraftBukkit
+@@ -188,7 +188,9 @@ public class NetherPortalBlock extends Block implements Portal {
+         final WorldBorder worldBorder
+         , org.bukkit.craftbukkit.event.PortalEventResult result // CraftBukkit
      ) {
--        Optional<BlockPos> optional = level.getPortalForcer().findClosestPortalPosition(exitPos, worldBorder, result.searchRadius()); // CraftBukkit
+-        Optional<BlockPos> exitPortalPos = newLevel.getPortalForcer().findClosestPortalPosition(approximateExitPos, worldBorder, result.searchRadius()); // CraftBukkit
 +        // The Archive - Search for exit portals from chunk data instead of POI
-+        Optional<BlockPos> optional = archive.PortalScanner.findNearestPortal(level, exitPos, result.searchRadius());
++        Optional<BlockPos> exitPortalPos = archive.PortalScanner.findNearestPortal(newLevel, approximateExitPos, result.searchRadius());
 +        // CraftBukkit
-         BlockUtil.FoundRectangle largestRectangleAround;
-         TeleportTransition.PostTeleportTransition postTeleportTransition;
-         if (optional.isPresent()) {
+         BlockUtil.FoundRectangle exitPortal;
+         TeleportTransition.PostTeleportTransition post;
+         if (exitPortalPos.isPresent()) {

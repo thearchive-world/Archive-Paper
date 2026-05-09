@@ -5,29 +5,21 @@ Subject: [PATCH] Handle entities with invalid position, rotation, or motion
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 3bf618f1d756bad7755a87803132bd731e7c41be..90208d6c1277b74af0784c62d56fe58e3b73e373 100644
+index 82f6582a92f17bdeb3218c4c1fcac86981fd9c37..2a683852a8bf586c5c8e9ece26707c033ebee709 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -148,6 +148,7 @@ import net.minecraft.world.scores.PlayerTeam;
- import net.minecraft.world.scores.ScoreHolder;
- import net.minecraft.world.scores.Team;
- import net.minecraft.world.waypoints.WaypointTransmitter;
-+import org.bukkit.event.entity.EntityRemoveEvent;
- import org.jetbrains.annotations.Contract;
- import org.jspecify.annotations.Nullable;
- import org.slf4j.Logger;
-@@ -2670,8 +2671,12 @@ public abstract class Entity implements SyncedDataHolder, DebugValueSource, Name
-     public void load(ValueInput input) {
+@@ -2689,8 +2689,12 @@ public abstract class Entity
+     public void load(final ValueInput input) {
          try {
-             Vec3 vec3 = input.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
--            Vec3 vec31 = input.read("Motion", Vec3.CODEC).orElse(Vec3.ZERO);
--            Vec2 vec2 = input.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO);
-+            if (archive.NanHelper.isInvalid(vec3.x(), vec3.y(), vec3.z())) {
-+                this.setRemoved(RemovalReason.DISCARDED, EntityRemoveEvent.Cause.DESPAWN);
+             Vec3 pos = input.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
+-            Vec3 motion = input.read("Motion", Vec3.CODEC).orElse(Vec3.ZERO);
+-            Vec2 rotation = input.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO);
++            if (archive.NanHelper.isInvalid(pos.x(), pos.y(), pos.z())) {
++                this.setRemoved(RemovalReason.DISCARDED, org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN);
 +                return;
 +            }
-+            Vec3 vec31 = input.read("Motion", Vec3.CODEC).orElse(Vec3.ZERO); vec31 = new Vec3(archive.NanHelper.ensureNonNaN(vec31.x), archive.NanHelper.ensureNonNaN(vec31.y), archive.NanHelper.ensureNonNaN(vec31.z));
-+            Vec2 vec2 = input.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO); vec2 = new Vec2(archive.NanHelper.ensureNonNaN(vec2.x), archive.NanHelper.ensureNonNaN(vec2.y));
-             this.setDeltaMovement(Math.abs(vec31.x) > 10.0 ? 0.0 : vec31.x, Math.abs(vec31.y) > 10.0 ? 0.0 : vec31.y, Math.abs(vec31.z) > 10.0 ? 0.0 : vec31.z);
-             this.needsSync = true;
-             double d = 3.0000512E7;
++            Vec3 motion = input.read("Motion", Vec3.CODEC).orElse(Vec3.ZERO); motion = new Vec3(archive.NanHelper.ensureNonNaN(motion.x), archive.NanHelper.ensureNonNaN(motion.y), archive.NanHelper.ensureNonNaN(motion.z));
++            Vec2 rotation = input.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO); rotation = new Vec2(archive.NanHelper.ensureNonNaN(rotation.x), archive.NanHelper.ensureNonNaN(rotation.y));
+             this.setDeltaMovement(
+                 Math.abs(motion.x) > 10.0 ? 0.0 : motion.x, Math.abs(motion.y) > 10.0 ? 0.0 : motion.y, Math.abs(motion.z) > 10.0 ? 0.0 : motion.z
+             );

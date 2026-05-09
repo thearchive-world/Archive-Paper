@@ -8,15 +8,15 @@ The base logic attempts to search for a random location within the configured sp
 However this also assumes it can create new chunks, which in our case it can't. So this process can loop while the process hangs and the server eventually crashes.
 
 diff --git a/net/minecraft/server/level/PlayerSpawnFinder.java b/net/minecraft/server/level/PlayerSpawnFinder.java
-index f637d14b0188728192b543d7841e99a98f0c5269..73fb2c73133aae772d196d81d750e2b492366d3f 100644
+index ddffd36d8213a40dc3f6cbb0ef0f33a0a7490ac1..b7f2f3af3f27477e3d7a2a4fc93c5e5a36149310 100644
 --- a/net/minecraft/server/level/PlayerSpawnFinder.java
 +++ b/net/minecraft/server/level/PlayerSpawnFinder.java
 @@ -43,7 +43,7 @@ public class PlayerSpawnFinder {
          this.radius = radius;
-         long l = radius * 2L + 1L;
-         this.candidateCount = (int)Math.min(1024L, l * l);
+         long squareSide = radius * 2L + 1L;
+         this.candidateCount = (int)Math.min(1024L, squareSide * squareSide);
 -        this.coprime = getCoprime(this.candidateCount);
 +        this.coprime = 0; // Archive - Disable respawn pos adjustment
-         this.offset = RandomSource.create().nextInt(this.candidateCount);
+         this.offset = RandomSource.createThreadLocalInstance().nextInt(this.candidateCount);
      }
  

@@ -5,15 +5,15 @@ Subject: [PATCH] Disable region file padding saving
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/RegionFile.java b/net/minecraft/world/level/chunk/storage/RegionFile.java
-index c6adcb44bc96eaeba74bfc228a6a61765b1628e7..65f1c8bab0ceb359fb0f1ad4d0d6e11840dfe02a 100644
+index e077797cefffcb9db627cab12c7d88245e5baa69..b7920837dd5663bed3b0999a359e25d5c835d320 100644
 --- a/net/minecraft/world/level/chunk/storage/RegionFile.java
 +++ b/net/minecraft/world/level/chunk/storage/RegionFile.java
-@@ -883,6 +883,8 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
+@@ -882,6 +882,8 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
      }
  
      private void padToFullSector() throws IOException {
 +        // The Archive - disable writing padding if saving is disabled
 +        if (archive.ArchiveSettings.disableSaving()) return;
-         int i = (int)this.file.size();
-         int i1 = sizeToSectors(i) * 4096;
-         if (i != i1) {
+         int fileSize = (int)this.file.size();
+         int paddedSize = sizeToSectors(fileSize) * 4096;
+         if (fileSize != paddedSize) {

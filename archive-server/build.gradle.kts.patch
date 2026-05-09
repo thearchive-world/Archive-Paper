@@ -15,10 +15,10 @@
 +
 +    activeFork = fork
 +
-     spigot {
-         enabled = true
-         buildDataRef = "17f77cee7117ab9d6175f088ae8962bfd04e61a9"
-@@ -104,7 +_,19 @@
+     updatingMinecraft {
+         // oldPaperCommit = "7e80cef5198561d0db53406127e5b8bc7af51577"
+     }
+@@ -86,7 +_,19 @@
      }
  }
  
@@ -39,16 +39,16 @@
  configurations.named(log4jPlugins.compileClasspathConfigurationName) {
      extendsFrom(configurations.compileClasspath.get())
  }
-@@ -127,7 +_,7 @@
+@@ -109,7 +_,7 @@
  }
  
  dependencies {
 -    implementation(project(":paper-api"))
 +    implementation(project(":archive-api"))
-     implementation("ca.spottedleaf:concurrentutil:0.0.8")
+     implementation("ca.spottedleaf:concurrentutil:0.0.10")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -264,7 +_,7 @@
+@@ -237,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
  
@@ -57,10 +57,3 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
-@@ -274,6 +_,18 @@
-     main {
-         java {
-             srcDir(generatedDir)
-         }
-     }
- }

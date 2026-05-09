@@ -4,16 +4,16 @@ Date: Wed, 23 Jul 2025 16:07:41 -0700
 Subject: [PATCH] Disable all data directory saving
 
 
-diff --git a/net/minecraft/world/level/storage/DimensionDataStorage.java b/net/minecraft/world/level/storage/DimensionDataStorage.java
-index b932e6236975fd4a755bdbf4b7a958599383f3f8..106b46ba23cb2926f0b9ad98993423de111406b5 100644
---- a/net/minecraft/world/level/storage/DimensionDataStorage.java
-+++ b/net/minecraft/world/level/storage/DimensionDataStorage.java
-@@ -139,6 +139,8 @@ public class DimensionDataStorage implements AutoCloseable {
+diff --git a/net/minecraft/world/level/storage/SavedDataStorage.java b/net/minecraft/world/level/storage/SavedDataStorage.java
+index 971c3f3311f5eb132817589ee5b7f65736c25b76..1f37f82be858e4b91e9c940d2fe9a88f98521c6a 100644
+--- a/net/minecraft/world/level/storage/SavedDataStorage.java
++++ b/net/minecraft/world/level/storage/SavedDataStorage.java
+@@ -147,6 +147,8 @@ public class SavedDataStorage implements AutoCloseable {
      }
  
      public CompletableFuture<?> scheduleSave() {
 +        // The Archive - don't save data
 +        if (archive.ArchiveSettings.disableSaving()) return CompletableFuture.completedFuture(null);
-         Map<SavedDataType<?>, CompoundTag> map = this.collectDirtyTagsToSave();
-         if (map.isEmpty()) {
-             return CompletableFuture.completedFuture(null);
+         if (this.closed) {
+             throw new IllegalStateException("Trying to schedule save when SavedDataStorage is already closed");
+         } else {

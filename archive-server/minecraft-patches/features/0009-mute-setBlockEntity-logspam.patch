@@ -5,29 +5,29 @@ Subject: [PATCH] mute setBlockEntity logspam
 
 
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index 3acc1374a7ef968d88e9f566ce7b812fb8d580af..581f51d9b38ec931a5bf78f8d65a7fa182fd8127 100644
+index a4b794781e66e6a054fb437bd0b66712b13320a4..772b1a47dbf85e4589c329a5156887bda7335eca 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -532,6 +532,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
-         BlockPos blockPos = blockEntity.getBlockPos();
-         BlockState blockState = this.getBlockState(blockPos);
+@@ -528,6 +528,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+         BlockPos pos = blockEntity.getBlockPos();
+         BlockState blockState = this.getBlockState(pos);
          if (!blockState.hasBlockEntity()) {
 +            if (true) return; // Archive - mute logspam
              // Paper start - ServerExceptionEvent
              com.destroystokyo.paper.exception.ServerInternalException e = new com.destroystokyo.paper.exception.ServerInternalException(
-                 "Trying to set block entity %s at position %s, but state %s does not allow it".formatted(blockEntity, blockPos, blockState)
-@@ -543,12 +544,12 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
-             BlockState blockState1 = blockEntity.getBlockState();
-             if (blockState != blockState1) {
+                 "Trying to set block entity %s at position %s, but state %s does not allow it".formatted(blockEntity, pos, blockState)
+@@ -539,12 +540,12 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+             BlockState cachedBlockState = blockEntity.getBlockState();
+             if (blockState != cachedBlockState) {
                  if (!blockEntity.getType().isValid(blockState)) {
--                    LOGGER.warn("Trying to set block entity {} at position {}, but state {} does not allow it", blockEntity, blockPos, blockState);
-+                    LOGGER.debug("Trying to set block entity {} at position {}, but state {} does not allow it", blockEntity, blockPos, blockState);
+-                    LOGGER.warn("Trying to set block entity {} at position {}, but state {} does not allow it", blockEntity, pos, blockState);
++                    LOGGER.debug("Trying to set block entity {} at position {}, but state {} does not allow it", blockEntity, pos, blockState);
                      return;
                  }
  
-                 if (blockState.getBlock() != blockState1.getBlock()) {
--                    LOGGER.warn("Block state mismatch on block entity {} in position {}, {} != {}, updating", blockEntity, blockPos, blockState, blockState1);
-+                    LOGGER.debug("Block state mismatch on block entity {} in position {}, {} != {}, updating", blockEntity, blockPos, blockState, blockState1);
+                 if (blockState.getBlock() != cachedBlockState.getBlock()) {
+-                    LOGGER.warn("Block state mismatch on block entity {} in position {}, {} != {}, updating", blockEntity, pos, blockState, cachedBlockState);
++                    LOGGER.debug("Block state mismatch on block entity {} in position {}, {} != {}, updating", blockEntity, pos, blockState, cachedBlockState);
                  }
  
                  blockEntity.setBlockState(blockState);

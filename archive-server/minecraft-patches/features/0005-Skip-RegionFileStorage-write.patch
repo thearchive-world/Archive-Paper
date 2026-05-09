@@ -5,15 +5,15 @@ Subject: [PATCH] Skip RegionFileStorage write
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/RegionFileStorage.java b/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
-index 1e9e061ec694ad64fc2724b83a66dfec7e069a43..c756a935725337d9f5fd00a431ab83dc930fc1cb 100644
+index eae4963b6d18c5f92871477b93f81c2c79331cd9..05662cef0b6edb214e0a14e14e78aedcc06038f8 100644
 --- a/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
 +++ b/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
 @@ -410,6 +410,8 @@ public class RegionFileStorage implements AutoCloseable, ca.spottedleaf.moonrise
-             if (chunkData == null) {
-                 regionFile.clear(chunkPos);
+             if (value == null) {
+                 region.clear(pos);
              } else {
 +            // The Archive - skip chunk writing
 +            if (archive.ArchiveSettings.disableSaving()) return;
-             DataOutputStream chunkDataOutputStream = regionFile.getChunkDataOutputStream(chunkPos); // Paper - Only write if successful
-             try { // Paper - Only write if successful
-                     NbtIo.write(chunkData, chunkDataOutputStream);
+                 // Paper - Only write if successful
+                 DataOutputStream output = region.getChunkDataOutputStream(pos);
+                 try { // Paper - Only write if successful

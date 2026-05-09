@@ -5,10 +5,10 @@ Subject: [PATCH] Disable Region File IO Saving
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java b/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
-index aa3d5a6ea59ac77665f2cfaa56a7d383016d08d0..ccd766579800dbddccfb403ea4b52cbed6b219bf 100644
+index 3bb9b58ee97464687e348e23b99159226415c267..77660ed6439e521d2b3d6acffd1e9eae2c7ca142 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/io/MoonriseRegionFileIO.java
-@@ -492,6 +492,7 @@ public final class MoonriseRegionFileIO {
+@@ -491,6 +491,7 @@ public final class MoonriseRegionFileIO {
  
      private static void scheduleSave(final ServerLevel world, final int chunkX, final int chunkZ, final Consumer<BiConsumer<CompoundTag, Throwable>> scheduler,
                                       final PrioritisedExecutor.PrioritisedTask writeTask, final RegionFileType type, final Priority priority) {
@@ -16,7 +16,7 @@ index aa3d5a6ea59ac77665f2cfaa56a7d383016d08d0..ccd766579800dbddccfb403ea4b52cbe
          final RegionDataController taskController = getControllerFor(world, type);
  
          final boolean[] created = new boolean[1];
-@@ -879,7 +880,7 @@ public final class MoonriseRegionFileIO {
+@@ -878,7 +879,7 @@ public final class MoonriseRegionFileIO {
              throw new IOException(ex);
          }
      }

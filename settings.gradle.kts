@@ -1,5 +1,3 @@
-import java.util.*
-
 pluginManagement {
     repositories {
         gradlePluginPortal()
@@ -14,7 +12,6 @@ plugins {
 rootProject.name = "archive-paper"
 
 for (name in listOf("archive-api", "archive-server")) {
-    val projName = name//.lowercase(Locale.ENGLISH)
-    include(projName)
-    findProject(":$projName")!!.projectDir = file(name)
+    include(name)
+    findProject(":$name")!!.projectDir = file(name)
 }
