@@ -42,9 +42,26 @@ jobs:
           name: paperclip
           path: archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
 
+      - name: Read paper build info
+        id: paper
+        run: |
+          paperRef=$(grep '^paperRef=' gradle.properties | cut -d= -f2-)
+          mcVersion=$(grep '^mcVersion=' gradle.properties | cut -d= -f2-)
+          paperBuild=$(curl -sf --max-time 10 "https://fill.papermc.io/v3/projects/paper/versions/${mcVersion}/builds" \
+            | jq -r --arg ref "$paperRef" '.[] | select((.commits // [])[].sha == $ref) | .id' \
+            | head -1 || echo "")
+          {
+            echo "paperRef=$paperRef"
+            echo "mcVersion=$mcVersion"
+            echo "paperBuild=${paperBuild:-unknown}"
+            echo "shortSha=${paperRef:0:7}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Release Paperclip Artifact
         uses: ncipollo/release-action@v1
         with:
           name: The Archive Paper ${{ github.ref_name }}
           artifacts: archive-server/build/libs/archive-paper-${{ github.ref_name }}.jar
           makeLatest: true
+          body: |
+            Built against **Paper ${{ steps.paper.outputs.mcVersion }} build #${{ steps.paper.outputs.paperBuild }}** ([`${{ steps.paper.outputs.shortSha }}`](https://github.com/PaperMC/Paper/commit/${{ steps.paper.outputs.paperRef }}))
