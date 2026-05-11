@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 10 May 2026 00:00:00 +0000
+Subject: [PATCH] Restore forceUpgrade
+
+
+diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
+index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+--- a/net/minecraft/server/Main.java
++++ b/net/minecraft/server/Main.java
+@@ -66,6 +66,7 @@
+     public static void main(final OptionSet options) { // CraftBukkit - replaces main(String[] args)
+         io.papermc.paper.log.LogManagerShutdownThread.hook(); // Paper - Improved watchdog support
+         SharedConstants.tryDetectVersion();
++        archive.ArchiveSettings.captureOptions(options); // The Archive - stash options before any save-path code can fire
+         /* CraftBukkit start - Replace everything
+         OptionParser parser = new OptionParser();
+         OptionSpec<Void> nogui = parser.accepts("nogui");
+@@ -111,12 +112,6 @@
+             Path settingsFile = Paths.get("server.properties");
+             DedicatedServerSettings settings = new DedicatedServerSettings(options); // CraftBukkit - CLI argument support
+             settings.forceSave();
+-            // Paper start
+-            if (options.has("forceUpgrade") || options.has("recreateRegionFiles")) {
+-                LOGGER.error("World upgrade and region file recreation are not yet implemented in Paper 26.1.");
+-                return;
+-            }
+-            // Paper end
+             RegionFileVersion.configure(settings.getProperties().regionFileComression);
+             Path eulaFile = Paths.get("eula.txt");
+             Eula eula = new Eula(eulaFile);
+@@ -289,13 +284,12 @@
+             }
+ 
+-            /*
+             RegistryAccess.Frozen registryHolder = worldStem.registries().compositeAccess();
+             WorldData data = worldStem.worldDataAndGenSettings().data();
+-            boolean recreateRegionFilesValue = options.has(recreateRegionFiles);
+-            if (options.has(forceUpgrade) || recreateRegionFilesValue) {
+-                forceUpgrade(access, DataFixers.getDataFixer(), options.has(eraseCache), () -> true, registryHolder, recreateRegionFilesValue);
++            boolean recreateRegionFilesValue = options.has("recreateRegionFiles");
++            if (options.has("forceUpgrade") || recreateRegionFilesValue) {
++                forceUpgrade(access, DataFixers.getDataFixer(), options.has("eraseCache"), () -> true, registryHolder, recreateRegionFilesValue);
+             }
+ 
+             access.saveDataTag(data);
+-            */
++            archive.ArchiveSettings.markUpgradeComplete(); // The Archive - upgrade phase done; revert to archive default
+             final DedicatedServer dedicatedServer = MinecraftServer.spin(
+@@ -427,10 +421,6 @@
+         final RegistryAccess registryAccess,
+         final boolean recreateRegionFiles
+     ) {
+-        throw new UnsupportedOperationException(
+-            "World upgrade and region file recreation are not yet implemented in Paper 26.1."
+-        );
+-        /*
+         LOGGER.info("Forcing world upgrade! {}", storageSource.getLevelId()); // CraftBukkit
+ 
+         try (WorldUpgrader upgrader = new WorldUpgrader(storageSource, fixerUpper, registryAccess, eraseCache, recreateRegionFiles)) {
+@@ -459,6 +449,5 @@
+                 }
+             }
+         }
+-        */
+     }
+ }

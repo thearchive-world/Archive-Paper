@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 10 May 2026 00:00:00 +0000
+Subject: [PATCH] Gate PaperWorldLoader forceUpgrade on upgradeComplete
+
+
+Paper's per-world PaperWorldLoader.loadWorldData re-invokes
+Main.forceUpgrade for each world load. Once minecraft-patch 0014 restored
+the up-front call in Main.main, this duplicates work and on
+--recreateRegionFiles spams "Failed to replace an old region file"
+errors because new_region/ was already moved away by the first pass.
+Skip the per-world invocation when ArchiveSettings.upgradeComplete is set
+(i.e. when Main.main already ran the upgrade).
+
+diff --git a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
+index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+--- a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
++++ b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
+@@ -167,7 +167,7 @@
+             primaryLevelData.setModdedInfo(this.server.getServerModName(), this.server.getModdedStatus().shouldReportAsModified());
+         }
+ 
+-        if (this.server.options.has("forceUpgrade")) {
++        if (this.server.options.has("forceUpgrade") && !archive.ArchiveSettings.upgradeComplete()) { // The Archive - skip when Main.main already ran the upgrade
+             Main.forceUpgrade(this.server.storageSource, DataFixers.getDataFixer(), this.server.options.has("eraseCache"), () -> true, this.server.registryAccess(), this.server.options.has("recreateRegionFiles"));
+         }
+ 

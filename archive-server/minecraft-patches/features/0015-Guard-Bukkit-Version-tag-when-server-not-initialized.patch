@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 10 May 2026 00:00:00 +0000
+Subject: [PATCH] Guard Bukkit.Version tag when Bukkit.server isn't ready
+
+
+CraftBukkit appends a Bukkit.Version string to the level.dat tag in
+PrimaryLevelData.setTagData. The expression unconditionally dereferences
+Bukkit.server via Bukkit.getName(), which assumes the CraftServer has
+already been constructed by MinecraftServer.spin(...). With --forceUpgrade
+restored (patch 0014), saveDataTag fires inside Main.main BEFORE
+MinecraftServer.spin runs, so Bukkit.server is still null and the read
+NPEs. Guard the write so the field is omitted when the server isn't ready
+yet; load-time readers tolerate the absence (it is informational metadata).
+
+diff --git a/net/minecraft/world/level/storage/PrimaryLevelData.java b/net/minecraft/world/level/storage/PrimaryLevelData.java
+index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+--- a/net/minecraft/world/level/storage/PrimaryLevelData.java
++++ b/net/minecraft/world/level/storage/PrimaryLevelData.java
+@@ -152,5 +152,7 @@
+         }
+ 
+         tag.store(WorldDataConfiguration.MAP_CODEC, this.settings.dataConfiguration());
+-        tag.putString("Bukkit.Version", org.bukkit.Bukkit.getName() + "/" + org.bukkit.Bukkit.getVersion() + "/" + org.bukkit.Bukkit.getBukkitVersion()); // CraftBukkit
++        if (org.bukkit.Bukkit.getServer() != null) { // The Archive - skip Bukkit.Version when Bukkit.server isn't initialized yet (e.g. during --forceUpgrade post-upgrade saveDataTag, before MinecraftServer.spin runs)
++            tag.putString("Bukkit.Version", org.bukkit.Bukkit.getName() + "/" + org.bukkit.Bukkit.getVersion() + "/" + org.bukkit.Bukkit.getBukkitVersion()); // CraftBukkit
++        }
+     }
