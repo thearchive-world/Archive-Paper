@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Wed, 13 May 2026 00:00:00 +0000
+Subject: [PATCH] `splitEntities` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 2c32df74c690ccd68534204e0b8694356d951085..3c32df74c690ccd68534204e0b8694356d951086 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -161,6 +161,12 @@ public class Main {
+                     .withRequiredArg()
+                     .ofType(Integer.class)
+                     .describedAs("Worker count");
++
++                this.accepts("splitEntities", "When --upgradeChunks runs, also split legacy embedded Entities into entities/*.mca at the current data version, removing them from the chunk tag. Three states: flag absent is off; --splitEntities alone is on; --splitEntities=true|false sets explicitly. Default (absent) is off; Paper's runtime path lazily extracts embedded entities on chunk load. Enable for tooling that wants modern on-disk layout. Silent no-op under --normalize, where the chunk-system save emits entities/*.mca as a side effect.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Split entities into separate files");
+             }
+         };
+

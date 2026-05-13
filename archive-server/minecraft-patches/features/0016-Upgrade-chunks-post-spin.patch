@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Tue, 12 May 2026 00:00:00 +0000
+Subject: [PATCH] Upgrade chunks post-spin
+
+After initServer has returned and one-tick init tasks have run, but
+before the main tick loop opens, check whether --upgradeChunks was
+requested. If so, dispatch ChunkUpgrader.run, mark the phase complete,
+and halt the server cleanly. The default backend is parallel direct-NBT
+(DirectNbtUpgrader): workers each own one region file and DFU chunk NBT
+in place via SimpleRegionStorage.upgradeChunkTag, with no chunk-system
+involvement. With --normalize, the chunk-system load-and-save path runs
+instead, with a pre-pass snapshot and post-pass fringe cleanup. See
+docs/upgrade-via-direct-nbt-plan.md and
+docs/upgrade-via-chunk-system-plan.md for rationale.
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index 440e5d2c199c6e8cbab2d5c92256cccfd0c555fe..46dc698df7c37c7b39f27b211b1a544073eb0c17 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1336,6 +1336,15 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+                 CompletableFuture.runAsync(com.destroystokyo.paper.PaperVersionFetcher::getUpdateStatusStartupMessage, io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR);
+             }
+             // Paper end - Improve outdated version checking
++            // The Archive start - upgrade chunks post-spin
++            if (archive.ArchiveSettings.upgradeChunksRequested()
++                    && !archive.ArchiveSettings.upgradeChunksComplete()) {
++                archive.ChunkUpgrader.run(this);
++                archive.ArchiveSettings.markUpgradeChunksComplete();
++                this.halt(false);
++                return;
++            }
++            // The Archive end - upgrade chunks post-spin
+
+             while (this.running) {
+                 final long tickStart = System.nanoTime(); // Paper - improve tick loop

@@ -13,11 +13,11 @@ index 9d4d97fcb0f3cc94e9a263c61cc0e7e58fd322c3..cf345f8e87862c67eb4b29c3e7c77650
                          .defaultsTo("Unknown Server")
                          .describedAs("Name");
 +
-+                this.accepts("archiveDisableSaving", "Disables world and entity saving, saving is disabled by default unless forceUpgrade is set")
++                this.accepts("archiveDisableSaving", "Disable world and entity saving (the archive default). Three states: flag absent uses the archive default unless an upgrade overrides; --archiveDisableSaving alone enables it; --archiveDisableSaving=true|false sets explicitly. Override: when the operator does NOT explicitly pass this flag, saving is forced on during --forceUpgrade, --recreateRegionFiles, and --upgradeChunks so the upgrade can persist. Explicitly setting --archiveDisableSaving=true alongside any of those logs a wedge warning at startup.")
 +                    .withOptionalArg()
 +                    .ofType(Boolean.class)
 +                    .defaultsTo(true)
 +                    .describedAs("Disable saving");
              }
          };
- 
+

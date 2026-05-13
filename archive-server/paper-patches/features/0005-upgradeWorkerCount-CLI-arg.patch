@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Wed, 13 May 2026 00:00:00 +0000
+Subject: [PATCH] `upgradeWorkerCount` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 1c32df74c690ccd68534204e0b8694356d951084..2c32df74c690ccd68534204e0b8694356d951085 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -156,6 +156,11 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Upgrade chunks");
++
++                this.accepts("upgradeWorkerCount", "Worker count for --upgradeChunks. Default: min(availableProcessors, 16). Diminishing returns past ~32 due to disk IO saturation; tune up for fast disks, down for IO-constrained environments.")
++                    .withRequiredArg()
++                    .ofType(Integer.class)
++                    .describedAs("Worker count");
+             }
+         };
+

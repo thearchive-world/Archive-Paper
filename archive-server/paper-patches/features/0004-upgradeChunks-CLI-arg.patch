@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Tue, 12 May 2026 00:00:00 +0000
+Subject: [PATCH] `upgradeChunks` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index c79b76324026c78ff1de399714f227b230561b1a..1c32df74c690ccd68534204e0b8694356d951084 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -150,6 +150,12 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Disable saving");
++
++                this.accepts("upgradeChunks", "Upgrade chunks to the current data version. Walks region/, entities/, and poi/ folders per dimension; each existing file is DFU'd in place. Default backend is parallel direct-NBT (post-spin, no chunk-system involvement, no fringes). Pass --normalize for the slower chunk-system load-and-save path that also re-derives POI, extracts embedded entities, and recomputes heightmaps. Tune worker count via --upgradeWorkerCount N. Pass --splitEntities to extract legacy embedded entities into entities/*.mca during the direct-NBT pass. Resumable via .archive-upgrade-progress.txt (deleted on clean completion). Server halts after the pass. Preferred over --forceUpgrade for archive-scale worlds: same DFU outcome, parallel, resumable, per-chunk failure tolerant.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Upgrade chunks");
+             }
+         };
+

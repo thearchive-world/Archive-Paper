@@ -10,10 +10,13 @@ public final class ArchiveSettings {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static volatile OptionSet capturedOptions;
     private static volatile boolean upgradeComplete;
+    private static volatile boolean upgradeChunksComplete;
 
     public static void captureOptions(OptionSet options) {
         capturedOptions = options;
         warnIfWedgeCombo(options);
+        warnIfUpgradeChunksWedge(options);
+        warnIfForceUpgradeAndUpgradeChunks(options);
     }
 
     private static void warnIfWedgeCombo(OptionSet options) {
@@ -27,8 +30,27 @@ public final class ArchiveSettings {
         LOGGER.warn("[The Archive] --archiveDisableSaving=true combined with {} will silently no-op every upgrade write. On a pre-26.1 world this wedges WorldFolderMigration in a retry loop. Drop --archiveDisableSaving (or set it to false) to actually persist the upgrade.", flag);
     }
 
+    private static void warnIfUpgradeChunksWedge(OptionSet options) {
+        if (!options.has("archiveDisableSaving")) return;
+        if (!archiveDisableSavingValue(options)) return;
+        if (!options.has("upgradeChunks")) return;
+        if (!upgradeChunksValue(options)) return;
+        LOGGER.warn("[The Archive] --archiveDisableSaving=true combined with --upgradeChunks will silently no-op every write the upgrade pass issues, leaving entities/*.mca and poi/*.mca empty. Drop --archiveDisableSaving (or set it to false) to actually persist the chunk upgrade.");
+    }
+
+    private static void warnIfForceUpgradeAndUpgradeChunks(OptionSet options) {
+        if (!options.has("upgradeChunks")) return;
+        if (!upgradeChunksValue(options)) return;
+        if (!options.has("forceUpgrade") && !options.has("recreateRegionFiles")) return;
+        LOGGER.info("[The Archive] --forceUpgrade/--recreateRegionFiles and --upgradeChunks are both set. Both DFU the same files; --forceUpgrade runs pre-spin and --upgradeChunks then no-ops on already-current chunks via its skip-if-current pre-flight. Either flag is sufficient on its own.");
+    }
+
     private static boolean archiveDisableSavingValue(OptionSet o) {
         return o.valueOf("archiveDisableSaving") instanceof Boolean b ? b : true;
+    }
+
+    private static boolean upgradeChunksValue(OptionSet o) {
+        return o.valueOf("upgradeChunks") instanceof Boolean b ? b : true;
     }
 
     public static void markUpgradeComplete() {
@@ -39,11 +61,43 @@ public final class ArchiveSettings {
         return upgradeComplete;
     }
 
+    public static boolean upgradeChunksRequested() {
+        OptionSet o = options();
+        if (o == null) return false;
+        if (!o.has("upgradeChunks")) return false;
+        return upgradeChunksValue(o);
+    }
+
+    public static boolean upgradeChunksComplete() {
+        return upgradeChunksComplete;
+    }
+
+    public static void markUpgradeChunksComplete() {
+        upgradeChunksComplete = true;
+    }
+
     private static OptionSet options() {
         OptionSet o = capturedOptions;
         if (o != null) return o;
         MinecraftServer s = MinecraftServer.getServer();
         return s instanceof DedicatedServer ds ? ds.options : null;
+    }
+
+    public static int upgradeWorkerCount() {
+        OptionSet o = options();
+        if (o == null || !o.has("upgradeWorkerCount")) {
+            return Math.min(Runtime.getRuntime().availableProcessors(), 16);
+        }
+        Object v = o.valueOf("upgradeWorkerCount");
+        if (v instanceof Integer i && i > 0) return i;
+        return Math.min(Runtime.getRuntime().availableProcessors(), 16);
+    }
+
+    public static boolean splitEntities() {
+        OptionSet o = options();
+        if (o == null || !o.has("splitEntities")) return false;
+        Object v = o.valueOf("splitEntities");
+        return v instanceof Boolean b ? b : true;
     }
 
     public static boolean disableSaving() {
@@ -53,12 +107,17 @@ public final class ArchiveSettings {
         boolean explicitlySet = o.has("archiveDisableSaving");
         boolean configuredValue = archiveDisableSavingValue(o);
 
-        // forceUpgrade and recreateRegionFiles both trigger the upgrade (Hunk 3
-        // if-guard: options.has("forceUpgrade") || recreateRegionFilesValue).
+        // forceUpgrade and recreateRegionFiles both trigger the vanilla pre-spin
+        // upgrade (vanilla guard tests options.has("forceUpgrade") || recreateRegionFilesValue).
         // Mirror that here so the upgrade actually persists. The override
         // applies only when the user didn't explicitly set archiveDisableSaving,
         // and only during the upgrade phase (cleared by markUpgradeComplete).
-        if (!explicitlySet && (o.has("forceUpgrade") || o.has("recreateRegionFiles")) && !upgradeComplete) {
+        // The chunk upgrade is a separate post-spin phase that also needs saving
+        // enabled while it runs; cleared by markUpgradeChunksComplete.
+        if (!explicitlySet && (
+                (o.has("forceUpgrade") || o.has("recreateRegionFiles")) && !upgradeComplete
+             || upgradeChunksRequested() && !upgradeChunksComplete
+           )) {
             return false;
         }
         return configuredValue;
