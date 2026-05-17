@@ -3,12 +3,14 @@ package archive;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.mojang.logging.LogUtils;
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,12 +26,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.Direction8;
+import net.minecraft.core.SectionPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.chunk.PalettedContainer;
+import net.minecraft.world.level.chunk.UpgradeData;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import net.minecraft.world.level.chunk.storage.SerializableChunkData;
@@ -47,10 +58,14 @@ import org.slf4j.Logger;
  * raw ProtoChunks, and a journal-replay tail pass for cross-region
  * writes.
  *
- * <p>Stage 1 (this commit): dispatcher skeleton only. Per-region work
- * is a no-op pass that walks the region file but does not yet mutate
- * chunks. Validates engine + patches integration before we add the
- * cache, LevelAccessor stub, UpgradeData walk, and Starlight bake.
+ * <p>Stage 3 (this commit): own-chunk UpgradeData walk and side-strip
+ * handler against a {@link BakeLevelAccessor} stub, with write-back
+ * of dirty owned chunks via {@link SerializableChunkData#write}. 3x3
+ * border load reads 8 neighbour regions for cross-chunk neighbour
+ * reads during the walk. Cross-region writes (LEAVES BFS, CHEST
+ * pairing landing outside the 3x3) increment a worker counter and are
+ * dropped; the journal-replay tail pass lands in stage 5/6. Heightmap
+ * prime and Starlight bake remain TODO for stage 4.
  */
 public final class BakeLightPass {
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -116,8 +131,8 @@ public final class BakeLightPass {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Bake-light complete: {} chunks walked in {}s",
-                        totalChunks, elapsedSec);
+            LOGGER.info("[The Archive] Bake-light complete: {} chunks walked, {} cross-region writes dropped in {}s",
+                        totalChunks, failures.crossRegionWritesDropped.get(), elapsedSec);
         }
     }
 
@@ -208,51 +223,321 @@ public final class BakeLightPass {
     }
 
     /**
-     * Stage 2 (current): load and parse every populated slot in the center
-     * region to {@link SerializableChunkData}. Cache the parsed records by
-     * chunk position so stage 3 can hand them to the own-chunk UpgradeData
-     * walker without re-parsing. Does NOT yet reconstruct a {@link
-     * net.minecraft.world.level.chunk.ProtoChunk}, build the 3x3 border, run
-     * the UpgradeData walk, prime heightmaps, bake Starlight, or write back.
+     * Stage 3 worker flow for one region. Sequence:
+     * <ol>
+     *   <li>Open the center {@link RegionFile} (non-DSYNC, same as {@link
+     *       DirectNbtUpgrader}; durability at close via {@code file.force(true)}).</li>
+     *   <li>Parse all 1024 populated slots into {@link CachedChunk} entries
+     *       marked {@code owned=true}.</li>
+     *   <li>Open each of up to 8 neighbour region files. Parse the 32 edge
+     *       chunks of each cardinal neighbour and the 1 corner chunk of each
+     *       diagonal neighbour into the cache marked {@code owned=false}.
+     *       Missing region files and missing slots tolerated silently.</li>
+     *   <li>For every owned cache entry whose {@link UpgradeData} is
+     *       non-empty, run the own-chunk walk (mirrors {@code upgradeInside}),
+     *       drain LEAVES chunky-fixers, then the side-strip handler
+     *       (mirrors {@code upgradeSides}). The walk mutates {@link
+     *       PalettedContainer} state in the cached {@link LevelChunkSection}
+     *       and flips the entry's {@code dirty} flag.</li>
+     *   <li>For every dirty owned cache entry, rebuild a {@link
+     *       SerializableChunkData} record with {@link UpgradeData#EMPTY}
+     *       (other fields reused; the mutated section list is shared), call
+     *       {@code .write()}, and write the resulting {@link CompoundTag}
+     *       back through the still-open center {@code RegionFile}.</li>
+     * </ol>
      *
-     * <p>Non-DSYNC open mirrors {@link DirectNbtUpgrader}; durability at
-     * region-close granularity via {@code file.force(true)} in
-     * {@code RegionFile.close}. Stage 2 has no writes, so the durability
-     * argument is moot for this stage and gets restated when stage 4 lands
-     * the heightmap/light write-back.
+     * <p>Cross-region writes (LEAVES BFS, CHEST pairing landing outside the
+     * 3x3) drop with a {@link Failures#crossRegionWritesDropped} counter
+     * increment; the journal lands in stage 5/6, not this stage.
+     *
+     * <p>Per-chunk try-catch: any throw inside the walk or write-back logs a
+     * partial-bake counter and continues with the rest of the region. The
+     * old NBT for that chunk stays on disk untouched; runtime first-load
+     * lazy-path code fixes the residual on its own.
      */
     private static long processRegion(
         RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz, Failures failures
     ) throws IOException {
         Path regionPath = regionFolder.resolve("r." + rx + "." + rz + ".mca");
         if (!Files.exists(regionPath)) return 0;
-        long parsed = 0;
-        Map<Long, CachedChunk> cache = new HashMap<>(1156);  // 1024 owned + 132 border slots
         String regionLabel = "r." + rx + "." + rz;
+        Map<Long, CachedChunk> cache = new HashMap<>(1156);
+        long parsed = 0;
         try (RegionFile region = new RegionFile(info, regionPath, regionFolder, false)) {
-            int xOffset = rx << 5;
-            int zOffset = rz << 5;
-            for (int dx = 0; dx < 32; dx++) {
-                for (int dz = 0; dz < 32; dz++) {
-                    ChunkPos pos = new ChunkPos(dx + xOffset, dz + zOffset);
-                    if (!region.doesChunkExist(pos)) continue;
-                    try {
-                        CachedChunk entry = loadOwned(region, pos, level);
-                        if (entry == null) continue;
-                        cache.put(pos.pack(), entry);
-                        parsed++;
-                    } catch (Exception ex) {
-                        String chunkKey = regionLabel + " chunk(" + pos.x() + "," + pos.z() + ")";
-                        LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, ex.toString());
-                        failures.recordChunk(chunkKey);
-                    }
+            parsed = loadCenter(region, level, cache, regionLabel, failures, rx, rz);
+            loadBorder(info, level, regionFolder, rx, rz, cache);
+
+            BakeLevelAccessor accessor = new BakeLevelAccessor(level, cache);
+            for (CachedChunk entry : new ArrayList<>(cache.values())) {
+                if (!entry.owned) continue;
+                if (entry.data.upgradeData().isEmpty()) continue;
+                ChunkPos pos = entry.data.chunkPos();
+                try {
+                    bakeChunkUpgrade(accessor, level, entry, pos);
+                    entry.dirty = true;
+                } catch (Throwable t) {
+                    String chunkKey = regionLabel + " bake(" + pos.x() + "," + pos.z() + ")";
+                    LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
+                    failures.recordChunk(chunkKey);
+                }
+            }
+
+            // Region finalize: write back every owned dirty cache entry. Only owned
+            // entries belong to this region's slot map; neighbour-owned writes that
+            // dirtied a non-owned border entry are dropped (stage 5 journal handles
+            // those). Region's force(true) on close gives durability granularity.
+            for (CachedChunk entry : cache.values()) {
+                if (!entry.dirty || !entry.owned) continue;
+                ChunkPos pos = entry.data.chunkPos();
+                try {
+                    writeChunk(region, pos, stripUpgradeData(entry.data));
+                } catch (Throwable t) {
+                    String chunkKey = regionLabel + " writeback(" + pos.x() + "," + pos.z() + ")";
+                    LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
+                    failures.recordChunk(chunkKey);
+                }
+            }
+
+            failures.crossRegionWritesDropped.addAndGet(accessor.crossRegionWritesDropped.get());
+        }
+        return parsed;
+    }
+
+    /** Parse all populated slots of the center region into the cache as owned. */
+    private static long loadCenter(
+        RegionFile region, ServerLevel level, Map<Long, CachedChunk> cache,
+        String regionLabel, Failures failures, int rx, int rz
+    ) throws IOException {
+        long parsed = 0;
+        int xOffset = rx << 5;
+        int zOffset = rz << 5;
+        for (int dx = 0; dx < 32; dx++) {
+            for (int dz = 0; dz < 32; dz++) {
+                ChunkPos pos = new ChunkPos(dx + xOffset, dz + zOffset);
+                if (!region.doesChunkExist(pos)) continue;
+                try {
+                    CachedChunk entry = loadChunk(region, pos, level, true);
+                    if (entry == null) continue;
+                    cache.put(pos.pack(), entry);
+                    parsed++;
+                } catch (Exception ex) {
+                    String chunkKey = regionLabel + " parse(" + pos.x() + "," + pos.z() + ")";
+                    LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, ex.toString());
+                    failures.recordChunk(chunkKey);
                 }
             }
         }
-        // TODO stage 3+: 3x3 border load, UpgradeData walk, heightmap prime,
-        // Starlight bake, region finalize (write back via copyOf + NbtIo).
-        // For now we just verify the parse path works and the cache populates.
         return parsed;
+    }
+
+    /**
+     * Parse the 1-chunk-wide border around the center region. Reads up to 8
+     * neighbour region files (4 cardinal, 4 diagonal); each missing-or-empty
+     * is silently tolerated.
+     */
+    private static void loadBorder(
+        RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz, Map<Long, CachedChunk> cache
+    ) {
+        // 4 cardinal neighbours contribute one 32-chunk edge each.
+        loadEdge(info, level, regionFolder, rx - 1, rz, 31, -1, -1, 0, 32, cache);   // west neighbour east edge
+        loadEdge(info, level, regionFolder, rx + 1, rz, 0,  -1, -1, 0, 32, cache);   // east neighbour west edge
+        loadEdge(info, level, regionFolder, rx, rz - 1, -1, 31, 0,  -1, 32, cache);  // north neighbour south edge
+        loadEdge(info, level, regionFolder, rx, rz + 1, -1, 0,  0,  -1, 32, cache);  // south neighbour north edge
+
+        // 4 diagonal neighbours contribute one corner chunk each.
+        loadEdge(info, level, regionFolder, rx - 1, rz - 1, 31, 31, -1, -1, 1, cache);
+        loadEdge(info, level, regionFolder, rx + 1, rz - 1, 0,  31, -1, -1, 1, cache);
+        loadEdge(info, level, regionFolder, rx - 1, rz + 1, 31, 0,  -1, -1, 1, cache);
+        loadEdge(info, level, regionFolder, rx + 1, rz + 1, 0,  0,  -1, -1, 1, cache);
+    }
+
+    /**
+     * Read 1..32 slots from a neighbour region. Edge specifiers:
+     * {@code fixedX}/{@code fixedZ} = pinned coord (use -1 to iterate),
+     * {@code baseX}/{@code baseZ} = iteration base when -1 was passed for
+     * the corresponding fixed coord (use 0 for full edge, ignored for
+     * pinned). {@code count} is the slot count to read. Cardinal edges pass
+     * one pinned coord and count=32; corners pin both and count=1.
+     */
+    private static void loadEdge(
+        RegionStorageInfo info, ServerLevel level, Path regionFolder,
+        int neighbourRx, int neighbourRz,
+        int fixedX, int fixedZ, int baseX, int baseZ, int count,
+        Map<Long, CachedChunk> cache
+    ) {
+        Path neighbourPath = regionFolder.resolve("r." + neighbourRx + "." + neighbourRz + ".mca");
+        if (!Files.exists(neighbourPath)) return;
+        try (RegionFile region = new RegionFile(info, neighbourPath, regionFolder, false)) {
+            int worldX = neighbourRx << 5;
+            int worldZ = neighbourRz << 5;
+            for (int i = 0; i < count; i++) {
+                int localX = fixedX >= 0 ? fixedX : (baseX + i);
+                int localZ = fixedZ >= 0 ? fixedZ : (baseZ + i);
+                ChunkPos pos = new ChunkPos(worldX + localX, worldZ + localZ);
+                if (!region.doesChunkExist(pos)) continue;
+                CachedChunk entry = loadChunk(region, pos, level, false);
+                if (entry != null) cache.put(pos.pack(), entry);
+            }
+        } catch (Exception ex) {
+            LOGGER.warn("[The Archive] bake-light border load r.{}.{} failed: {}",
+                        neighbourRx, neighbourRz, ex.toString());
+        }
+    }
+
+    /**
+     * Mirrors {@link UpgradeData}{@code .upgrade()} for a single chunk against
+     * our {@link BakeLevelAccessor}: own-chunk walk via {@code upgradeInside},
+     * chunky-fixer drain (LEAVES BFS), then the 8-direction side-strip
+     * handler ({@code upgradeSides}). Neighbour-tick replay is handled by
+     * {@link #replayNeighborTicks}, called separately from the bake loop.
+     */
+    private static void bakeChunkUpgrade(BakeLevelAccessor accessor, ServerLevel level, CachedChunk entry, ChunkPos chunkPos) {
+        UpgradeData ud = entry.data.upgradeData();
+        bakeUpgradeInside(accessor, level, entry, ud, chunkPos);
+        // Drain LEAVES BFS queue (the only CHUNKY fixer currently registered);
+        // writes routed via BakeLevelAccessor.setBlock to cache or counter.
+        UpgradeDataReflect.runChunkyFixers(accessor);
+        bakeUpgradeSides(accessor, level, entry, ud, chunkPos);
+    }
+
+    /**
+     * Mirrors {@link UpgradeData}{@code .upgradeInside} (UpgradeData.java:173-216):
+     * iterate each section's Indices, look up the dispatch fixer per current
+     * state, run updateShape for each direction whose neighbour is still in the
+     * same chunk, finalize with {@link Block#updateOrDestroy}.
+     */
+    private static void bakeUpgradeInside(
+        BakeLevelAccessor accessor, ServerLevel level, CachedChunk entry, UpgradeData ud, ChunkPos chunkPos
+    ) {
+        int[][] indices = UpgradeDataReflect.indices(ud);
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos neighbourPos = new BlockPos.MutableBlockPos();
+        Direction[] directions = Direction.values();
+
+        for (int sectionIndex = 0; sectionIndex < indices.length; sectionIndex++) {
+            int[] upgradeIndex = indices[sectionIndex];
+            indices[sectionIndex] = null;
+            if (upgradeIndex == null || upgradeIndex.length == 0) continue;
+
+            LevelChunkSection section = entry.sectionByIndex(level, sectionIndex);
+            if (section == null) continue;
+            PalettedContainer<BlockState> states = section.getStates();
+            int sectionY = level.getSectionYFromSectionIndex(sectionIndex);
+            int bottomYInSection = SectionPos.sectionToBlockCoord(sectionY);
+
+            for (int coord : upgradeIndex) {
+                int x = coord & 15;
+                int y = (coord >> 8) & 15;
+                int z = (coord >> 4) & 15;
+                pos.set(chunkPos.getMinBlockX() + x, bottomYInSection + y, chunkPos.getMinBlockZ() + z);
+                BlockState state = states.get(coord);
+                BlockState newState = state;
+
+                for (Direction direction : directions) {
+                    neighbourPos.setWithOffset(pos, direction);
+                    if (SectionPos.blockToSectionCoord(neighbourPos.getX()) == chunkPos.x()
+                            && SectionPos.blockToSectionCoord(neighbourPos.getZ()) == chunkPos.z()) {
+                        UpgradeData.BlockFixer fixer = UpgradeDataReflect.fixerFor(newState.getBlock());
+                        newState = fixer.updateShape(newState, direction, accessor.getBlockState(neighbourPos), accessor, pos, neighbourPos);
+                    }
+                }
+
+                Block.updateOrDestroy(state, newState, accessor, pos, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+            }
+        }
+    }
+
+    /**
+     * Mirrors {@link UpgradeData}{@code .upgradeSides} (UpgradeData.java:133-164):
+     * for each of the 8 {@link Direction8} sides flagged on the chunk's
+     * UpgradeData, walk the marked edge strip, reapply updateShape across all
+     * 4 cardinal neighbours (cross-chunk reads through the cache), finalize
+     * with {@link Block#updateOrDestroy}. Writes always land intra-chunk.
+     */
+    private static void bakeUpgradeSides(
+        BakeLevelAccessor accessor, ServerLevel level, CachedChunk entry, UpgradeData ud, ChunkPos chunkPos
+    ) {
+        EnumSet<Direction8> sides = UpgradeDataReflect.sides(ud);
+        if (sides.isEmpty()) return;
+        Direction[] updateDirections = Direction.values();
+        BlockPos.MutableBlockPos neighbourPos = new BlockPos.MutableBlockPos();
+
+        // Snapshot the side set since processing is destructive in vanilla; we
+        // iterate a copy and clear after.
+        Direction8[] toProcess = sides.toArray(new Direction8[0]);
+        sides.clear();
+
+        for (Direction8 direction8 : toProcess) {
+            Set<Direction> dirs = direction8.getDirections();
+            boolean east = dirs.contains(Direction.EAST);
+            boolean west = dirs.contains(Direction.WEST);
+            boolean south = dirs.contains(Direction.SOUTH);
+            boolean north = dirs.contains(Direction.NORTH);
+            boolean singular = dirs.size() == 1;
+            int minBlockX = chunkPos.getMinBlockX();
+            int minBlockZ = chunkPos.getMinBlockZ();
+            int minX = minBlockX + (!singular || !north && !south ? (west ? 0 : 15) : 1);
+            int maxX = minBlockX + (!singular || !north && !south ? (west ? 0 : 15) : 14);
+            int minZ = minBlockZ + (!singular || !east && !west ? (north ? 0 : 15) : 1);
+            int maxZ = minBlockZ + (!singular || !east && !west ? (north ? 0 : 15) : 14);
+
+            for (BlockPos pos : BlockPos.betweenClosed(minX, accessor.getMinY(), minZ, maxX, accessor.getMaxY(), maxZ)) {
+                BlockState state = accessor.getBlockState(pos);
+                BlockState newState = state;
+
+                for (Direction direction : updateDirections) {
+                    neighbourPos.setWithOffset(pos, direction);
+                    UpgradeData.BlockFixer fixer = UpgradeDataReflect.fixerFor(newState.getBlock());
+                    newState = fixer.updateShape(newState, direction, accessor.getBlockState(neighbourPos), accessor, pos, neighbourPos);
+                }
+
+                Block.updateOrDestroy(state, newState, accessor, pos, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+            }
+        }
+    }
+
+    /**
+     * Rebuild a {@link SerializableChunkData} record with {@link
+     * UpgradeData#EMPTY} substituted for the chunk's upgrade blob. All other
+     * fields (including the mutated {@code sectionData} list) reuse the
+     * existing references; {@link SerializableChunkData#write} will skip the
+     * "UpgradeData" NBT key entirely when isEmpty() is true.
+     *
+     * <p>{@code neighbor_block_ticks} and {@code neighbor_fluid_ticks} on the
+     * UpgradeData blob get dropped along with everything else; stage 5 will
+     * re-route these to the target chunks' on-disk tick lists. Acceptable
+     * stage 3 forfeit (1.12.2-era source chunks rarely carry neighbour ticks
+     * compared to Indices/Sides).
+     */
+    private static SerializableChunkData stripUpgradeData(SerializableChunkData original) {
+        return new SerializableChunkData(
+            original.containerFactory(),
+            original.chunkPos(),
+            original.minSectionY(),
+            original.lastUpdateTime(),
+            original.inhabitedTime(),
+            original.chunkStatus(),
+            original.blendingData(),
+            original.belowZeroRetrogen(),
+            UpgradeData.EMPTY,
+            original.carvingMask(),
+            original.heightmaps(),
+            original.packedTicks(),
+            original.postProcessingSections(),
+            original.lightCorrect(),
+            original.sectionData(),
+            original.entities(),
+            original.blockEntities(),
+            original.structureData(),
+            original.persistentDataContainer()
+        );
+    }
+
+    private static void writeChunk(RegionFile region, ChunkPos pos, SerializableChunkData data) throws IOException {
+        CompoundTag tag = data.write();
+        try (DataOutputStream out = region.getChunkDataOutputStream(pos)) {
+            NbtIo.write(tag, out);
+        }
     }
 
     /**
@@ -268,7 +553,7 @@ public final class BakeLightPass {
      * no chunk-system ticket): all of that happens in
      * {@link SerializableChunkData#read} which we deliberately avoid.
      */
-    private static CachedChunk loadOwned(RegionFile region, ChunkPos pos, ServerLevel level) throws IOException {
+    private static CachedChunk loadChunk(RegionFile region, ChunkPos pos, ServerLevel level, boolean owned) throws IOException {
         CompoundTag chunkTag;
         try (DataInputStream in = region.getChunkDataInputStream(pos)) {
             if (in == null) return null;
@@ -276,7 +561,7 @@ public final class BakeLightPass {
         }
         SerializableChunkData parsed = SerializableChunkData.parse(level, level.palettedContainerFactory(), chunkTag);
         if (parsed == null) return null;
-        return new CachedChunk(parsed, true);
+        return new CachedChunk(parsed, owned);
     }
 
     private static Path progressFilePath(MinecraftServer server) {
@@ -338,17 +623,50 @@ public final class BakeLightPass {
      * {@code owned} flag (set when the chunk belongs to this worker's center
      * region versus a 1-chunk border read from a neighbour region) and a
      * {@code dirty} flag (set when the bake mutated the parsed state and a
-     * write-back is owed at region finalize). Stage 2 populates {@code owned}
-     * only; {@code dirty} stays {@code false} until stage 3 starts mutating.
+     * write-back is owed at region finalize).
+     *
+     * <p>{@code sectionsByIndex} is a lazily-built dense array of {@link
+     * LevelChunkSection} indexed by {@code sectionIndex} (=
+     * {@code sectionY - minSectionY}), the same indexing vanilla uses in
+     * {@link UpgradeData}{@code .upgradeInside}. The array shares
+     * {@link PalettedContainer} references with the {@link
+     * SerializableChunkData.SectionData} list, so the bake's in-place mutations
+     * survive when {@link SerializableChunkData#write} re-serializes the
+     * section list.
      */
     static final class CachedChunk {
         SerializableChunkData data;
         final boolean owned;
         boolean dirty;
+        private LevelChunkSection @org.jspecify.annotations.Nullable [] sectionsByIndex;
 
         CachedChunk(SerializableChunkData data, boolean owned) {
             this.data = data;
             this.owned = owned;
+        }
+
+        LevelChunkSection sectionByIndex(final ServerLevel level, final int sectionIndex) {
+            ensureSectionArray(level);
+            if (sectionIndex < 0 || sectionIndex >= sectionsByIndex.length) return null;
+            return sectionsByIndex[sectionIndex];
+        }
+
+        LevelChunkSection sectionAt(final ServerLevel level, final int blockY) {
+            int sectionIndex = level.getSectionIndexFromSectionY(blockY >> 4);
+            return sectionByIndex(level, sectionIndex);
+        }
+
+        private void ensureSectionArray(final ServerLevel level) {
+            if (sectionsByIndex != null) return;
+            LevelChunkSection[] sections = new LevelChunkSection[level.getSectionsCount()];
+            for (SerializableChunkData.SectionData section : data.sectionData()) {
+                if (section.chunkSection() == null) continue;
+                int idx = level.getSectionIndexFromSectionY(section.y());
+                if (idx >= 0 && idx < sections.length) {
+                    sections[idx] = section.chunkSection();
+                }
+            }
+            sectionsByIndex = sections;
         }
     }
 
@@ -357,6 +675,7 @@ public final class BakeLightPass {
         final AtomicLong regionCount = new AtomicLong();
         final ConcurrentLinkedQueue<String> chunkSample = new ConcurrentLinkedQueue<>();
         final AtomicLong chunkCount = new AtomicLong();
+        final AtomicLong crossRegionWritesDropped = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
