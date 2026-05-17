@@ -5,10 +5,10 @@ Subject: [PATCH] Restore forceUpgrade
 
 
 diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
-index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+index aa15c5c83f04e518c30a9dee7945062099197c25..dfb32ed19afb0f5352892ce0daed554128a0aff7 100644
 --- a/net/minecraft/server/Main.java
 +++ b/net/minecraft/server/Main.java
-@@ -66,6 +66,7 @@
+@@ -66,6 +66,7 @@ public class Main {
      public static void main(final OptionSet options) { // CraftBukkit - replaces main(String[] args)
          io.papermc.paper.log.LogManagerShutdownThread.hook(); // Paper - Improved watchdog support
          SharedConstants.tryDetectVersion();
@@ -16,7 +16,7 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
          /* CraftBukkit start - Replace everything
          OptionParser parser = new OptionParser();
          OptionSpec<Void> nogui = parser.accepts("nogui");
-@@ -111,12 +112,6 @@
+@@ -111,12 +112,6 @@ public class Main {
              Path settingsFile = Paths.get("server.properties");
              DedicatedServerSettings settings = new DedicatedServerSettings(options); // CraftBukkit - CLI argument support
              settings.forceSave();
@@ -29,7 +29,8 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
              RegionFileVersion.configure(settings.getProperties().regionFileComression);
              Path eulaFile = Paths.get("eula.txt");
              Eula eula = new Eula(eulaFile);
-@@ -289,13 +284,12 @@
+@@ -288,16 +283,15 @@ public class Main {
+                 return;
              }
  
 -            /*
@@ -47,7 +48,9 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 -            */
 +            archive.ArchiveSettings.markUpgradeComplete(); // The Archive - upgrade phase done; revert to archive default
              final DedicatedServer dedicatedServer = MinecraftServer.spin(
-@@ -427,10 +421,6 @@
+                 thread -> {
+                     DedicatedServer server = new DedicatedServer(
+@@ -427,10 +421,6 @@ public class Main {
          final RegistryAccess registryAccess,
          final boolean recreateRegionFiles
      ) {
@@ -58,7 +61,7 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
          LOGGER.info("Forcing world upgrade! {}", storageSource.getLevelId()); // CraftBukkit
  
          try (WorldUpgrader upgrader = new WorldUpgrader(storageSource, fixerUpper, registryAccess, eraseCache, recreateRegionFiles)) {
-@@ -459,6 +449,5 @@
+@@ -459,6 +449,5 @@ public class Main {
                  }
              }
          }

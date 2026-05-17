@@ -5,10 +5,10 @@ Subject: [PATCH] `archiveDisableSaving` CLI arg
 
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
-index 9d4d97fcb0f3cc94e9a263c61cc0e7e58fd322c3..cf345f8e87862c67eb4b29c3e7c7765013e0cdf1 100644
+index 8ce8de8eedfe8557848b0508857744a5b9641239..8b31c4a7cc3c8a0f212b56f83438dd833bbd927d 100644
 --- a/src/main/java/org/bukkit/craftbukkit/Main.java
 +++ b/src/main/java/org/bukkit/craftbukkit/Main.java
-@@ -174,6 +174,12 @@ public class Main {
+@@ -144,6 +144,12 @@ public class Main {
                          .ofType(String.class)
                          .defaultsTo("Unknown Server")
                          .describedAs("Name");
@@ -20,4 +20,4 @@ index 9d4d97fcb0f3cc94e9a263c61cc0e7e58fd322c3..cf345f8e87862c67eb4b29c3e7c77650
 +                    .describedAs("Disable saving");
              }
          };
-
+ 

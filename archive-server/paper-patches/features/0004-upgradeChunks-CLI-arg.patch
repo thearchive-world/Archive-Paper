@@ -5,7 +5,7 @@ Subject: [PATCH] `upgradeChunks` CLI arg
 
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
-index c79b76324026c78ff1de399714f227b230561b1a..1c32df74c690ccd68534204e0b8694356d951084 100644
+index 8b31c4a7cc3c8a0f212b56f83438dd833bbd927d..e488ef519231aa21cfc444826210dc3732b2eff5 100644
 --- a/src/main/java/org/bukkit/craftbukkit/Main.java
 +++ b/src/main/java/org/bukkit/craftbukkit/Main.java
 @@ -150,6 +150,12 @@ public class Main {
@@ -13,11 +13,11 @@ index c79b76324026c78ff1de399714f227b230561b1a..1c32df74c690ccd68534204e0b869435
                      .defaultsTo(true)
                      .describedAs("Disable saving");
 +
-+                this.accepts("upgradeChunks", "Upgrade chunks to the current data version. Walks region/, entities/, and poi/ folders per dimension; each existing file is DFU'd in place. Default backend is parallel direct-NBT (post-spin, no chunk-system involvement, no fringes). Pass --normalize for the slower chunk-system load-and-save path that also re-derives POI, extracts embedded entities, and recomputes heightmaps. Tune worker count via --upgradeWorkerCount N. Pass --splitEntities to extract legacy embedded entities into entities/*.mca during the direct-NBT pass. Resumable via .archive-upgrade-progress.txt (deleted on clean completion). Server halts after the pass. Preferred over --forceUpgrade for archive-scale worlds: same DFU outcome, parallel, resumable, per-chunk failure tolerant.")
++                this.accepts("upgradeChunks", "Upgrade chunks to the current data version. Walks region/, entities/, and poi/ folders per dimension; each existing file is DFU'd in place via parallel direct-NBT (post-spin, no chunk-system involvement). Also DFU's the overworld data/minecraft/maps/<n>.dat and data/minecraft/maps/last_id.dat in place (single-threaded; map counts are tiny vs chunks). Tune worker count via --upgradeWorkerCount N. Pass --splitEntities to extract legacy embedded entities into entities/*.mca during the pass. Resumable via .archive-upgrade-progress.txt (deleted on clean completion). Server halts after the pass. Preferred over --forceUpgrade for archive-scale worlds: same DFU outcome, parallel, resumable, per-chunk failure tolerant. Part of the operator pipeline: upgradeChunks, then cleanDirtyChunks, then auditDirtyChunks; each as a separate invocation.")
 +                    .withOptionalArg()
 +                    .ofType(Boolean.class)
 +                    .defaultsTo(true)
 +                    .describedAs("Upgrade chunks");
              }
          };
-
+ 

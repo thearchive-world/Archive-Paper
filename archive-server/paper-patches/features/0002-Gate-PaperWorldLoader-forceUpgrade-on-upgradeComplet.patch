@@ -3,7 +3,6 @@ From: terbin <terbin.2b2t@gmail.com>
 Date: Sun, 10 May 2026 00:00:00 +0000
 Subject: [PATCH] Gate PaperWorldLoader forceUpgrade on upgradeComplete
 
-
 Paper's per-world PaperWorldLoader.loadWorldData re-invokes
 Main.forceUpgrade for each world load. Once minecraft-patch 0014 restored
 the up-front call in Main.main, this duplicates work and on
@@ -13,10 +12,10 @@ Skip the per-world invocation when ArchiveSettings.upgradeComplete is set
 (i.e. when Main.main already ran the upgrade).
 
 diff --git a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
-index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+index cd3e7cc8cf083915de46e03d9b2aaea3003f48fb..58701d1f35879cf54fc010231de98356f74cd328 100644
 --- a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
 +++ b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
-@@ -167,7 +167,7 @@
+@@ -167,7 +167,7 @@ public record PaperWorldLoader(MinecraftServer server, String levelId) {
              primaryLevelData.setModdedInfo(this.server.getServerModName(), this.server.getModdedStatus().shouldReportAsModified());
          }
  

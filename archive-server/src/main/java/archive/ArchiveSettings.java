@@ -100,6 +100,20 @@ public final class ArchiveSettings {
         return v instanceof Boolean b ? b : true;
     }
 
+    public static boolean auditDirtyChunks() {
+        OptionSet o = options();
+        if (o == null || !o.has("auditDirtyChunks")) return false;
+        Object v = o.valueOf("auditDirtyChunks");
+        return v instanceof Boolean b ? b : true;
+    }
+
+    public static boolean cleanDirtyChunks() {
+        OptionSet o = options();
+        if (o == null || !o.has("cleanDirtyChunks")) return false;
+        Object v = o.valueOf("cleanDirtyChunks");
+        return v instanceof Boolean b ? b : true;
+    }
+
     public static boolean disableSaving() {
         OptionSet o = options();
         if (o == null) return true; // pre-bootstrap safe default

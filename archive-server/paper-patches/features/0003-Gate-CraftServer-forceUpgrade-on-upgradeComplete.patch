@@ -3,7 +3,6 @@ From: terbin <terbin.2b2t@gmail.com>
 Date: Sun, 10 May 2026 00:00:00 +0000
 Subject: [PATCH] Gate CraftServer forceUpgrade on upgradeComplete
 
-
 CraftServer.createWorld invokes Main.forceUpgrade for plugin-created
 worlds whenever --forceUpgrade is set. After minecraft-patch 0014
 restored the up-front Main.main call, this is redundant for the initial
@@ -12,10 +11,10 @@ have no stale chunks). Skip the call when ArchiveSettings.upgradeComplete
 is set.
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+index ab2224ecebc5ea185472b418f0bde6eddfa4f287..06afdf24a2a4786b05d9c70d318ae52d73941897 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-@@ -1255,7 +1255,7 @@
+@@ -1255,7 +1255,7 @@ public final class CraftServer implements Server {
  
          contextLevelStemRegistry = registryAccess.lookupOrThrow(Registries.LEVEL_STEM);
  

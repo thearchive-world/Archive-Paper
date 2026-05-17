@@ -5,7 +5,7 @@ Subject: [PATCH] `upgradeWorkerCount` CLI arg
 
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
-index 1c32df74c690ccd68534204e0b8694356d951084..2c32df74c690ccd68534204e0b8694356d951085 100644
+index 8a67e2ced414cd2880bcedc2de819a8700544e24..76361d4d141bc6514e5f2bb152de66637d195fec 100644
 --- a/src/main/java/org/bukkit/craftbukkit/Main.java
 +++ b/src/main/java/org/bukkit/craftbukkit/Main.java
 @@ -156,6 +156,11 @@ public class Main {
@@ -19,4 +19,4 @@ index 1c32df74c690ccd68534204e0b8694356d951084..2c32df74c690ccd68534204e0b869435
 +                    .describedAs("Worker count");
              }
          };
-
+ 

@@ -6,8 +6,11 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.PushbackInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,16 +29,20 @@ import java.util.regex.Pattern;
 import net.minecraft.SharedConstants;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.NbtUtils;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.FastBufferedInputStream;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import net.minecraft.world.level.chunk.storage.SimpleRegionStorage;
+import net.minecraft.world.level.storage.LevelResource;
 import org.slf4j.Logger;
 
 public final class DirectNbtUpgrader {
@@ -89,6 +96,19 @@ public final class DirectNbtUpgrader {
             pool.shutdown();
             awaitWithWatchdogTicks(pool, failures);
         }
+
+        // Map data lives ONLY at <world>/data/minecraft/maps/ on the overworld root
+        // (never per-dimension): MinecraftServer constructs its SavedDataStorage at
+        // storageSource.getLevelPath(LevelResource.DATA) (MinecraftServer.java:329),
+        // and ServerLevel.getMapData() routes to that server-wide storage
+        // (ServerLevel.java:1481), which resolves SavedDataType ids of the form
+        // "minecraft:maps/<n>" to <dataDir>/minecraft/maps/<n>.dat. FileFixerUpper
+        // (Main.java:148, gated on level.dat DataVersion < v4772) has already moved
+        // any legacy data/map_*.dat -> data/minecraft/maps/<n>.dat and
+        // data/idcounts.dat -> data/minecraft/maps/last_id.dat before we run, so we
+        // walk one directory. Single-threaded: typical worlds have a few hundred map
+        // files, three orders of magnitude smaller than chunk work.
+        processMapData(server, completed, progressFile, failures);
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0) {
@@ -403,6 +423,112 @@ public final class DirectNbtUpgrader {
         try (DataOutputStream out = chunkRegion.getChunkDataOutputStream(pos)) {
             NbtIo.write(chunkTag, out);
         }
+        return true;
+    }
+
+    private static void processMapData(
+        MinecraftServer server, Set<String> completed, Path progressFile, Failures failures
+    ) {
+        Path mapsDir = server.storageSource.getLevelPath(LevelResource.DATA)
+            .resolve("minecraft").resolve("maps");
+        File[] files = mapsDir.toFile().listFiles((d, n) -> n.endsWith(".dat"));
+        if (files == null || files.length == 0) {
+            LOGGER.info("[The Archive] Upgrading map data: no files, skipping");
+            return;
+        }
+
+        LOGGER.info("[The Archive] Upgrading map data: {} files", files.length);
+        long startMillis = System.currentTimeMillis();
+        long upgraded = 0;
+        long skippedCurrent = 0;
+        long resumed = 0;
+
+        // Single-threaded loop runs on the main thread post-spin; pump the Paper
+        // watchdog every 200 files (~hundred ms of DFU work) to avoid the 60s
+        // exit-70 kill on large mapsets (47k+ archive files). Progress log every
+        // 5000 processed (not resumed) files for visibility on large mapsets.
+        int sincePump = 0;
+        long processed = 0;
+        for (File file : files) {
+            String name = file.getName();
+            String key = "mapdata " + name;
+            if (completed.contains(key)) {
+                resumed++;
+                continue;
+            }
+            // last_id.dat is the map index (formerly idcounts.dat); everything else
+            // in maps/ is per-map data. Names checked against MapIndex.TYPE (id
+            // "maps/last_id") and MapId.key() ("maps/" + id).
+            DataFixTypes fixType = name.equals("last_id.dat")
+                ? DataFixTypes.SAVED_DATA_MAP_INDEX
+                : DataFixTypes.SAVED_DATA_MAP_DATA;
+            try {
+                if (upgradeMapFile(file.toPath(), fixType)) {
+                    upgraded++;
+                } else {
+                    skippedCurrent++;
+                }
+                appendProgress(progressFile, key);
+            } catch (Throwable t) {
+                LOGGER.error("[The Archive] Map file {} failed: {}", name, t.toString());
+                failures.recordRegion(key);
+            }
+            if (++sincePump >= 200) {
+                org.spigotmc.WatchdogThread.tick();
+                sincePump = 0;
+            }
+            if (++processed % 5000 == 0) {
+                long elapsedMs = System.currentTimeMillis() - startMillis;
+                long rate = elapsedMs > 0 ? processed * 1000L / elapsedMs : 0;
+                LOGGER.info("[The Archive]   map data: {} / {} processed ({} maps/s, {} upgraded, {} already current)",
+                            processed, files.length - resumed, rate, upgraded, skippedCurrent);
+            }
+        }
+
+        long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
+        LOGGER.info("[The Archive] Map data upgrade complete: {} upgraded, {} already current, {} resumed in {}s",
+                    upgraded, skippedCurrent, resumed, elapsedSec);
+    }
+
+    /**
+     * Read one map .dat, DFU if below current version, rewrite gzipped. Returns
+     * true when the file was rewritten, false when skipped because it's already
+     * at current. Mirrors {@link net.minecraft.world.level.storage.SavedDataStorage#readTagFromDisk}'s
+     * gzip detection: legacy uncompressed files predate the rename DFU and may
+     * survive on ancient sources; post-rename files are gzip via NbtIo.writeCompressed.
+     */
+    private static boolean upgradeMapFile(Path file, DataFixTypes fixType) throws IOException {
+        CompoundTag tag;
+        try (InputStream in = Files.newInputStream(file);
+             PushbackInputStream pin = new PushbackInputStream(new FastBufferedInputStream(in), 2)) {
+            byte[] header = new byte[2];
+            int read = pin.read(header, 0, 2);
+            boolean gzip = read == 2 && (((header[1] & 0xFF) << 8) | (header[0] & 0xFF)) == 0x8B1F;
+            if (read > 0) pin.unread(header, 0, read);
+            if (gzip) {
+                tag = NbtIo.readCompressed(pin, NbtAccounter.unlimitedHeap());
+            } else {
+                try (DataInputStream dis = new DataInputStream(pin)) {
+                    tag = NbtIo.read(dis);
+                }
+            }
+        }
+        // 1343 (1.13.2) is the same pre-DataVersion fallback vanilla uses in
+        // SavedDataStorage; older tags will DFU forward from there.
+        int version = NbtUtils.getDataVersion(tag, 1343);
+        if (version == CURRENT_DATA_VERSION) return false;
+        CompoundTag fixed = fixType.update(DataFixers.getDataFixer(), tag, version, CURRENT_DATA_VERSION);
+        // DataFixTypes.update doesn't stamp DataVersion (the codec wrapper does on
+        // encode); we're writing raw NBT, so stamp ourselves or the next run will
+        // see the pre-DFU version and re-fix.
+        NbtUtils.addCurrentDataVersion(fixed);
+        // Atomic write: NbtIo.writeCompressed truncates the target before streaming
+        // gzip; a JVM kill mid-write leaves a stub. Stage to .tmp + ATOMIC_MOVE
+        // so the on-disk file is either the pre-DFU original or the fully written
+        // post-DFU version, never partial.
+        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+        NbtIo.writeCompressed(fixed, tmp);
+        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         return true;
     }
 

@@ -3,7 +3,6 @@ From: terbin <terbin.2b2t@gmail.com>
 Date: Sun, 10 May 2026 00:00:00 +0000
 Subject: [PATCH] Guard Bukkit.Version tag when Bukkit.server isn't ready
 
-
 CraftBukkit appends a Bukkit.Version string to the level.dat tag in
 PrimaryLevelData.setTagData. The expression unconditionally dereferences
 Bukkit.server via Bukkit.getName(), which assumes the CraftServer has
@@ -14,10 +13,10 @@ NPEs. Guard the write so the field is omitted when the server isn't ready
 yet; load-time readers tolerate the absence (it is informational metadata).
 
 diff --git a/net/minecraft/world/level/storage/PrimaryLevelData.java b/net/minecraft/world/level/storage/PrimaryLevelData.java
-index 0000000000000000000000000000000000000000..0000000000000000000000000000000000000000 100644
+index b62cbb3a20f7bea0a36e744e2978a9f3a6c9d442..b9b59f0a22a3f23d83762dbab28859e3c40db4a7 100644
 --- a/net/minecraft/world/level/storage/PrimaryLevelData.java
 +++ b/net/minecraft/world/level/storage/PrimaryLevelData.java
-@@ -152,5 +152,7 @@
+@@ -152,7 +152,9 @@ public class PrimaryLevelData implements ServerLevelData, WorldData {
          }
  
          tag.store(WorldDataConfiguration.MAP_CODEC, this.settings.dataConfiguration());
@@ -26,3 +25,5 @@ index 0000000000000000000000000000000000000000..00000000000000000000000000000000
 +            tag.putString("Bukkit.Version", org.bukkit.Bukkit.getName() + "/" + org.bukkit.Bukkit.getVersion() + "/" + org.bukkit.Bukkit.getBukkitVersion()); // CraftBukkit
 +        }
      }
+ 
+     public static void writeLastPlayed(final CompoundTag tag) {
