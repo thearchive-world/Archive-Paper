@@ -131,8 +131,8 @@ public final class BakeLightPass {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Bake-light complete: {} chunks walked, {} cross-region writes dropped in {}s",
-                        totalChunks, failures.crossRegionWritesDropped.get(), elapsedSec);
+            LOGGER.info("[The Archive] Bake-light complete: {} chunks parsed, {} baked, {} cross-region writes dropped in {}s",
+                        totalChunks, failures.chunksBaked.get(), failures.crossRegionWritesDropped.get(), elapsedSec);
         }
     }
 
@@ -268,6 +268,7 @@ public final class BakeLightPass {
             loadBorder(info, level, regionFolder, rx, rz, cache);
 
             BakeLevelAccessor accessor = new BakeLevelAccessor(level, cache);
+            long baked = 0;
             for (CachedChunk entry : new ArrayList<>(cache.values())) {
                 if (!entry.owned) continue;
                 if (entry.data.upgradeData().isEmpty()) continue;
@@ -275,12 +276,14 @@ public final class BakeLightPass {
                 try {
                     bakeChunkUpgrade(accessor, level, entry, pos);
                     entry.dirty = true;
+                    baked++;
                 } catch (Throwable t) {
                     String chunkKey = regionLabel + " bake(" + pos.x() + "," + pos.z() + ")";
                     LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
                     failures.recordChunk(chunkKey);
                 }
             }
+            failures.chunksBaked.addAndGet(baked);
 
             // Region finalize: write back every owned dirty cache entry. Only owned
             // entries belong to this region's slot map; neighbour-owned writes that
@@ -676,6 +679,7 @@ public final class BakeLightPass {
         final ConcurrentLinkedQueue<String> chunkSample = new ConcurrentLinkedQueue<>();
         final AtomicLong chunkCount = new AtomicLong();
         final AtomicLong crossRegionWritesDropped = new AtomicLong();
+        final AtomicLong chunksBaked = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
