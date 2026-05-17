@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Thu, 14 May 2026 12:00:00 +0000
+Subject: [PATCH] `cleanDirtyChunks` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index d1d90dd605d1558cab7349324f5b80f65ba1b09f..8b2b527cff8fd114e32627ac7770d3771b8de53d 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -173,6 +173,12 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Run the read-only dirty-chunk audit pass");
++
++                this.accepts("cleanDirtyChunks", "Post-pass for --upgradeChunks. Strips the dirt classes --auditDirtyChunks measures (invalid-attrs, ghost-bes, be-coord-mismatch, uuid-dups) directly from region/*.mca and entities/*.mca NBT, in parallel, with no chunk-system load. Run AFTER --upgradeChunks (DFU), never on raw 1.12.2: vanilla legacy attribute names fail the same Identifier.tryParse parser the Forge-taint detector uses, so Level-wrapped chunks are skipped and counted under legacy-chunks. Halts cleanly after the pass. Does not chain with --upgradeChunks; run the three (upgrade, clean, audit) as separate invocations.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Run the dirty-chunk NBT clean pass");
+             }
+         };
+ 
