@@ -2,13 +2,16 @@ package archive;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.mojang.logging.LogUtils;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -21,12 +24,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
+import net.minecraft.world.level.chunk.storage.SerializableChunkData;
 import org.slf4j.Logger;
 
 /**
@@ -202,15 +208,16 @@ public final class BakeLightPass {
     }
 
     /**
-     * Stage 1 (current): open the region file and enumerate populated slots to
-     * prove the engine integrates end-to-end (dispatcher + RegionFile open +
-     * progress file + halt). Does NOT yet load chunks, build the cache,
-     * walk UpgradeData, or bake light. The real worker flow lands in
-     * stages 2-7 per the spec.
+     * Stage 2 (current): load and parse every populated slot in the center
+     * region to {@link SerializableChunkData}. Cache the parsed records by
+     * chunk position so stage 3 can hand them to the own-chunk UpgradeData
+     * walker without re-parsing. Does NOT yet reconstruct a {@link
+     * net.minecraft.world.level.chunk.ProtoChunk}, build the 3x3 border, run
+     * the UpgradeData walk, prime heightmaps, bake Starlight, or write back.
      *
      * <p>Non-DSYNC open mirrors {@link DirectNbtUpgrader}; durability at
      * region-close granularity via {@code file.force(true)} in
-     * {@code RegionFile.close}. Stage 1 has no writes, so the durability
+     * {@code RegionFile.close}. Stage 2 has no writes, so the durability
      * argument is moot for this stage and gets restated when stage 4 lands
      * the heightmap/light write-back.
      */
@@ -219,7 +226,9 @@ public final class BakeLightPass {
     ) throws IOException {
         Path regionPath = regionFolder.resolve("r." + rx + "." + rz + ".mca");
         if (!Files.exists(regionPath)) return 0;
-        long walked = 0;
+        long parsed = 0;
+        Map<Long, CachedChunk> cache = new HashMap<>(1156);  // 1024 owned + 132 border slots
+        String regionLabel = "r." + rx + "." + rz;
         try (RegionFile region = new RegionFile(info, regionPath, regionFolder, false)) {
             int xOffset = rx << 5;
             int zOffset = rz << 5;
@@ -227,14 +236,47 @@ public final class BakeLightPass {
                 for (int dz = 0; dz < 32; dz++) {
                     ChunkPos pos = new ChunkPos(dx + xOffset, dz + zOffset);
                     if (!region.doesChunkExist(pos)) continue;
-                    walked++;
-                    // TODO stage 2-7: load via raw NbtIo, parse to
-                    // SerializableChunkData, reconstruct ProtoChunk, walk
-                    // UpgradeData, prime heightmaps, bake Starlight, write back.
+                    try {
+                        CachedChunk entry = loadOwned(region, pos, level);
+                        if (entry == null) continue;
+                        cache.put(pos.pack(), entry);
+                        parsed++;
+                    } catch (Exception ex) {
+                        String chunkKey = regionLabel + " chunk(" + pos.x() + "," + pos.z() + ")";
+                        LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, ex.toString());
+                        failures.recordChunk(chunkKey);
+                    }
                 }
             }
         }
-        return walked;
+        // TODO stage 3+: 3x3 border load, UpgradeData walk, heightmap prime,
+        // Starlight bake, region finalize (write back via copyOf + NbtIo).
+        // For now we just verify the parse path works and the cache populates.
+        return parsed;
+    }
+
+    /**
+     * Read one chunk slot's raw NBT and parse it to {@link
+     * SerializableChunkData}. Returns null when the stream is unexpectedly
+     * absent (rare race against another writer; same shape as
+     * {@link DirectNbtUpgrader#processChunk}).
+     *
+     * <p>The parse hits {@link SerializableChunkData#parse} which reads
+     * UpgradeData, heightmaps, light arrays, ticks, and structure data into
+     * a record without instantiating any chunk object. No side effects on
+     * the live {@link ServerLevel} (no POI write, no light-engine queueing,
+     * no chunk-system ticket): all of that happens in
+     * {@link SerializableChunkData#read} which we deliberately avoid.
+     */
+    private static CachedChunk loadOwned(RegionFile region, ChunkPos pos, ServerLevel level) throws IOException {
+        CompoundTag chunkTag;
+        try (DataInputStream in = region.getChunkDataInputStream(pos)) {
+            if (in == null) return null;
+            chunkTag = NbtIo.read(in);
+        }
+        SerializableChunkData parsed = SerializableChunkData.parse(level, level.palettedContainerFactory(), chunkTag);
+        if (parsed == null) return null;
+        return new CachedChunk(parsed, true);
     }
 
     private static Path progressFilePath(MinecraftServer server) {
@@ -290,6 +332,25 @@ public final class BakeLightPass {
     }
 
     private record SubmittedRegion(String key, Future<?> future) {}
+
+    /**
+     * Per-worker cache entry. Holds the parsed chunk record plus an
+     * {@code owned} flag (set when the chunk belongs to this worker's center
+     * region versus a 1-chunk border read from a neighbour region) and a
+     * {@code dirty} flag (set when the bake mutated the parsed state and a
+     * write-back is owed at region finalize). Stage 2 populates {@code owned}
+     * only; {@code dirty} stays {@code false} until stage 3 starts mutating.
+     */
+    static final class CachedChunk {
+        SerializableChunkData data;
+        final boolean owned;
+        boolean dirty;
+
+        CachedChunk(SerializableChunkData data, boolean owned) {
+            this.data = data;
+            this.owned = owned;
+        }
+    }
 
     private static final class Failures {
         final Set<String> regions = ConcurrentHashMap.newKeySet();
