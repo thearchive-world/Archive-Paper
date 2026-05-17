@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Thu, 14 May 2026 00:00:00 +0000
+Subject: [PATCH] `auditDirtyChunks` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index f8979ba7b9023831bd8908e5dfe887dcc933c7ad..d1d90dd605d1558cab7349324f5b80f65ba1b09f 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -167,6 +167,12 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Split entities into separate files");
++
++                this.accepts("auditDirtyChunks", "Read-only NBT audit pass. Walks each dimension's region/*.mca files, decodes block_entities and sections.block_states, counts entries whose stored block is minecraft:air (orphan block entities). Prints per-dim and total counts. Use to verify the post-upgrade pipeline ran cleanly (counts should be zero after --cleanDirtyChunks). Audit-only run; does not modify world files. Does not chain with --upgradeChunks; run audit + upgrade as separate invocations.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Run the read-only dirty-chunk audit pass");
+             }
+         };
+ 
