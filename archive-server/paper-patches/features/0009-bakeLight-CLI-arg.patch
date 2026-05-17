@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 18 May 2026 00:00:00 +0000
+Subject: [PATCH] `bakeLight` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 8b2b527cff8fd114e32627ac7770d3771b8de53d..0000000000000000000000000000000000000000 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -179,6 +179,12 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Run the dirty-chunk NBT clean pass");
++
++                this.accepts("bakeLight", "Post-pass for --upgradeChunks. Bakes isLightOn, finalized heightmaps, and resolved UpgradeData (Indices, Sides, neighbour-tick lists) into each chunk on disk so the runtime save-gated load no longer pays UpgradeData.upgrade(), Starlight, or Heightmap.primeHeightmaps per-visit on legacy chunks. Operator runs AFTER --upgradeChunks and --cleanDirtyChunks, BEFORE --auditDirtyChunks. Halts cleanly after the pass. Does not chain with --upgradeChunks; run as a separate invocation.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Run the bake-light pass");
+             }
+         };
+

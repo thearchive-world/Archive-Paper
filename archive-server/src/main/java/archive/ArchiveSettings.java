@@ -114,6 +114,13 @@ public final class ArchiveSettings {
         return v instanceof Boolean b ? b : true;
     }
 
+    public static boolean bakeLight() {
+        OptionSet o = options();
+        if (o == null || !o.has("bakeLight")) return false;
+        Object v = o.valueOf("bakeLight");
+        return v instanceof Boolean b ? b : true;
+    }
+
     public static boolean disableSaving() {
         OptionSet o = options();
         if (o == null) return true; // pre-bootstrap safe default

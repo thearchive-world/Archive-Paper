@@ -17,7 +17,7 @@ diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/Mi
 index 440e5d2c199c6e8cbab2d5c92256cccfd0c555fe..4a170bb6c72f777f3a834b26a73040db93780a38 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1336,6 +1336,29 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1336,6 +1336,36 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                  CompletableFuture.runAsync(com.destroystokyo.paper.PaperVersionFetcher::getUpdateStatusStartupMessage, io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR);
              }
              // Paper end - Improve outdated version checking
@@ -35,6 +35,13 @@ index 440e5d2c199c6e8cbab2d5c92256cccfd0c555fe..4a170bb6c72f777f3a834b26a73040db
 +                return;
 +            }
 +            // The Archive end - clean dirty chunks post-spin
++            // The Archive start - bake light post-spin (post-pass for --upgradeChunks + --cleanDirtyChunks)
++            if (archive.ArchiveSettings.bakeLight()) {
++                archive.BakeLightPass.run(this);
++                this.halt(false);
++                return;
++            }
++            // The Archive end - bake light post-spin
 +            // The Archive start - upgrade chunks post-spin
 +            if (archive.ArchiveSettings.upgradeChunksRequested()
 +                    && !archive.ArchiveSettings.upgradeChunksComplete()) {
