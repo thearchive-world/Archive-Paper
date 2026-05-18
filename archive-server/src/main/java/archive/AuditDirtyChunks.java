@@ -31,8 +31,11 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
+import net.minecraft.world.level.levelgen.Heightmap;
+import ca.spottedleaf.moonrise.patches.starlight.util.SaveUtil;
 import org.slf4j.Logger;
 
 /**
@@ -168,9 +171,10 @@ public final class AuditDirtyChunks {
             .mapToLong(c -> c.get() - 1)
             .filter(n -> n > 0)
             .sum();
-        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} poi-valid, {} poi-invalid in {}s",
+        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid in {}s",
                     total.chunks, total.blockEntities, total.ghostBes, total.beCoordMismatch,
                     total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
+                    total.bakeComplete, total.bakePartial, total.bakePending,
                     total.poiValidSections, total.poiInvalidSections, elapsedSec);
     }
 
@@ -224,6 +228,11 @@ public final class AuditDirtyChunks {
                         dimTotals.entities += a.entityCount;
                         dimTotals.invalidAttrs += a.invalidAttrCount;
                         if (a.legacy) dimTotals.legacyChunks++;
+                        switch (a.bakeStatus) {
+                            case COMPLETE -> dimTotals.bakeComplete++;
+                            case PARTIAL -> dimTotals.bakePartial++;
+                            case PENDING -> dimTotals.bakePending++;
+                        }
                         regionProgress.chunkDone();
                     }
                 }
@@ -295,9 +304,10 @@ public final class AuditDirtyChunks {
             }
         }
 
-        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} poi-valid, {} poi-invalid",
+        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid",
                     dim, dimTotals.chunks, dimTotals.blockEntities, dimTotals.ghostBes, dimTotals.beCoordMismatch,
                     dimTotals.entities, dimTotals.invalidAttrs, dimTotals.legacyChunks,
+                    dimTotals.bakeComplete, dimTotals.bakePartial, dimTotals.bakePending,
                     dimTotals.poiValidSections, dimTotals.poiInvalidSections);
         return dimTotals;
     }
@@ -318,9 +328,33 @@ public final class AuditDirtyChunks {
     }
 
     private record ChunkAudit(int blockEntityCount, int ghostBeCount, int beCoordMismatchCount,
-                              int entityCount, int invalidAttrCount, boolean legacy) {}
+                              int entityCount, int invalidAttrCount, boolean legacy,
+                              BakeStatus bakeStatus) {}
 
     private record EntityAudit(int entityCount, int invalidAttrCount) {}
+
+    /**
+     * Three-state classification of {@code --bakeLight} progress on a single
+     * post-1.18 chunk:
+     * <ul>
+     *   <li>{@code COMPLETE}: {@code isLightOn} present AND
+     *       {@code starlight.light_version == STARLIGHT_LIGHT_VERSION}
+     *       (Paper marks "fully lit" iff both, see {@code SerializableChunkData}
+     *       and {@link SaveUtil#STARLIGHT_VERSION_TAG}); AND every key in
+     *       {@code ChunkStatus.FULL.heightmapsAfter()} is present on the
+     *       {@code Heightmaps} compound; AND {@code UpgradeData} is absent or
+     *       carries no Indices, Sides, neighbor_block_ticks, neighbor_fluid_ticks
+     *       (mirrors {@code BakeLightPass.hasUpgradeWork}).</li>
+     *   <li>{@code PARTIAL}: at least one but not all of the above hold. Surfaces
+     *       a chunk that the bake started on but didn't finish, or one whose
+     *       markers got partially stripped by a later write.</li>
+     *   <li>{@code PENDING}: none of the bake markers are set. Pre-1.18
+     *       {@code Level}-wrapped chunks classify here unconditionally (they
+     *       must run through {@code --upgradeChunks} before the bake can touch
+     *       them).</li>
+     * </ul>
+     */
+    private enum BakeStatus { COMPLETE, PARTIAL, PENDING }
 
     private static ChunkAudit auditChunk(RegionFile rf, ChunkPos pos) {
         CompoundTag root;
@@ -340,7 +374,9 @@ public final class AuditDirtyChunks {
         // bound. DFU'ing first (--upgradeChunks) lifts them to the schema we
         // can validate.
         boolean legacy = root.getCompound("Level").isPresent();
-        if (legacy) return new ChunkAudit(0, 0, 0, 0, 0, true);
+        if (legacy) return new ChunkAudit(0, 0, 0, 0, 0, true, BakeStatus.PENDING);
+
+        BakeStatus bakeStatus = classifyBakeStatus(root);
 
         // Embedded entities: post-DFU 1.21 stores them at root under lowercase
         // "entities" (mirroring "block_entities"). Split into entities/*.mca
@@ -348,7 +384,7 @@ public final class AuditDirtyChunks {
         EntityAudit ea = auditEntityList(root.getListOrEmpty("entities"));
 
         ListTag bes = root.getListOrEmpty("block_entities");
-        if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, ea.entityCount, ea.invalidAttrCount, false);
+        if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
 
         Map<Integer, SectionDecoder> sections = new HashMap<>();
         for (int i = 0; i < root.getListOrEmpty("sections").size(); i++) {
@@ -382,7 +418,64 @@ public final class AuditDirtyChunks {
                 ghosts++;
             }
         }
-        return new ChunkAudit(bes.size(), ghosts, coordMismatch, ea.entityCount, ea.invalidAttrCount, false);
+        return new ChunkAudit(bes.size(), ghosts, coordMismatch, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
+    }
+
+    /**
+     * Classify the {@code --bakeLight} state of a single chunk from raw NBT.
+     * Four markers are inspected; their combined state collapses to one of
+     * {@link BakeStatus#COMPLETE}, {@link BakeStatus#PARTIAL},
+     * {@link BakeStatus#PENDING}.
+     *
+     * The marker set tracks what {@code BakeLightPass} writes: the lit pair
+     * ({@code isLightOn} and Starlight's version tag), all FULL-status
+     * heightmaps, and a drained {@code UpgradeData}. Both halves of the lit
+     * pair are required because Paper's Starlight gates "fully lit" on the
+     * version match in addition to the legacy bool, so a chunk carrying only
+     * one is genuinely half-baked.
+     *
+     * Emptiness for {@code UpgradeData} mirrors {@code BakeLightPass#hasUpgradeWork}
+     * rather than {@code UpgradeData.isEmpty()}: the latter only inspects
+     * Indices and Sides, missing chunks that still carry neighbour ticks.
+     */
+    private static BakeStatus classifyBakeStatus(CompoundTag root) {
+        boolean hasLightOn = root.get("isLightOn") != null;
+        boolean hasLightVersion = root.getIntOr(SaveUtil.STARLIGHT_VERSION_TAG, -1) == SaveUtil.STARLIGHT_LIGHT_VERSION;
+        CompoundTag heightmaps = root.getCompoundOrEmpty("Heightmaps");
+        boolean hasAllHeightmaps = true;
+        for (Heightmap.Types type : ChunkStatus.FULL.heightmapsAfter()) {
+            if (heightmaps.get(type.getSerializationKey()) == null) {
+                hasAllHeightmaps = false;
+                break;
+            }
+        }
+        boolean upgradeDataDrained = upgradeDataIsDrained(root);
+
+        int markersSet = (hasLightOn ? 1 : 0)
+                       + (hasLightVersion ? 1 : 0)
+                       + (hasAllHeightmaps ? 1 : 0)
+                       + (upgradeDataDrained ? 1 : 0);
+        if (markersSet == 4) return BakeStatus.COMPLETE;
+        // upgradeDataDrained is true for an absent UpgradeData (the bake's
+        // expected end state), so a freshly-DFU'd chunk that has not yet been
+        // baked typically has 1/4 markers set: drained-or-absent UpgradeData
+        // but no light pair and no heightmaps. Distinguishing "0 markers" from
+        // "1 marker (drained UpgradeData only)" would over-report PARTIAL on
+        // every pre-bake chunk, so PENDING covers the pre-bake state.
+        boolean anyBakeArtifact = hasLightOn || hasLightVersion || hasAllHeightmaps;
+        return anyBakeArtifact ? BakeStatus.PARTIAL : BakeStatus.PENDING;
+    }
+
+    private static boolean upgradeDataIsDrained(CompoundTag root) {
+        CompoundTag ud = root.getCompoundOrEmpty("UpgradeData");
+        if (ud.isEmpty()) return true;
+        if (!ud.getListOrEmpty("Indices").isEmpty()) return false;
+        // Sides is a single byte bitmask; non-zero means at least one side
+        // still owes a wall update. Absence reads as 0 via getByteOr default.
+        if (ud.getByteOr("Sides", (byte) 0) != 0) return false;
+        if (!ud.getListOrEmpty("neighbor_block_ticks").isEmpty()) return false;
+        if (!ud.getListOrEmpty("neighbor_fluid_ticks").isEmpty()) return false;
+        return true;
     }
 
     private static EntityAudit auditEntitiesChunk(RegionFile rf, ChunkPos pos) {
@@ -552,6 +645,13 @@ public final class AuditDirtyChunks {
         long entities;
         long invalidAttrs;
         long legacyChunks;
+        // Bake-status counters: see {@link BakeStatus}. bake-pending dominates a
+        // pre-bake post-DFU snapshot, bake-complete should fully account for
+        // non-legacy chunks after --bakeLight, and a non-zero bake-partial on
+        // a post-bake fixture is a real signal worth investigating.
+        long bakeComplete;
+        long bakePartial;
+        long bakePending;
         // POI section counters, populated by the poi/ pass. Document disk
         // state of poi/*.mca (written by a runtime chunk-system FULL
         // transition); both are typically 0 on a post-pipeline world since
@@ -567,6 +667,9 @@ public final class AuditDirtyChunks {
             entities += other.entities;
             invalidAttrs += other.invalidAttrs;
             legacyChunks += other.legacyChunks;
+            bakeComplete += other.bakeComplete;
+            bakePartial += other.bakePartial;
+            bakePending += other.bakePending;
             poiValidSections += other.poiValidSections;
             poiInvalidSections += other.poiInvalidSections;
         }
