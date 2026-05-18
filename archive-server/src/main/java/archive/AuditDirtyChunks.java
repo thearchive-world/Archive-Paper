@@ -31,6 +31,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
@@ -39,7 +40,7 @@ import ca.spottedleaf.moonrise.patches.starlight.util.SaveUtil;
 import org.slf4j.Logger;
 
 /**
- * Read-only NBT audit. Three dirt classes are measured:
+ * Read-only NBT audit. Four dirt classes are measured:
  * <ul>
  *   <li>{@code ghost-bes}: entries in {@code block_entities} sitting at a
  *       coordinate whose stored block does not carry a block entity, i.e. its
@@ -52,6 +53,15 @@ import org.slf4j.Logger;
  *       stored {@code (x, y, z)} chunk-coords disagree with the holding
  *       chunk's coords. Paper logs WARN "found in a wrong chunk, expected
  *       position from chunk [...]" and drops the BE on load.</li>
+ *   <li>{@code be-type-mismatch}: entries in {@code block_entities} whose
+ *       stored {@code id} maps to a registered {@link BlockEntityType} whose
+ *       {@code isValid(BlockState)} set does NOT include the block at the
+ *       BE's coordinate. The block is itself a BE-carrier (so the
+ *       {@code ghost-bes} predicate passes), it is just the wrong type. MC
+ *       rejects on load with the same {@code IllegalStateException} format
+ *       as {@code ghost-bes}; surfaced as 2x {@code minecraft:hopper} at
+ *       {@code minecraft:beacon} + 1x {@code minecraft:dispenser} at
+ *       {@code minecraft:dropper}.</li>
  *   <li>{@code invalid-attrs}: entities whose {@code attributes[*].id} or
  *       {@code attributes[*].modifiers[*].id} fails {@link Identifier#tryParse}.
  *       Catches legacy mod-attribute taint like {@code forge.swimSpeed} that
@@ -73,12 +83,12 @@ import org.slf4j.Logger;
  *     sources, run direct-NBT upgrade first to bring them to current data
  *     version, then audit.
  *   - The {@code ghost-bes} check is the {@code hasBlockEntity()} predicate,
- *     i.e. "this block carries a BE at all". It does NOT catch a type-mismatch
- *     case like a chest BE on a hopper block (both carry BEs, but of different
- *     types). That class only emits the muted WARN at chunk-system load, not
- *     the fatal codec {@code IllegalStateException}, so for our purposes the
- *     stronger predicate is unnecessary; the cleaner mirrors the same
- *     predicate.
+ *     i.e. "this block carries a BE at all". The {@code be-type-mismatch}
+ *     check covers the complementary case (block carries a BE but of a
+ *     different type than the BE's stored {@code id}); both classes throw
+ *     the same {@code IllegalStateException("Invalid block entity ...")}
+ *     under Paper's chunk-system load codec, so a healthy world reports
+ *     zero on both.
  *   - "invalid-attrs" only inspects the post-DFU 1.21 attribute schema
  *     ({@code attributes:[{id,base,modifiers:[{id,amount,operation}]}]}). The
  *     legacy 1.12.2 shape ({@code Attributes:[{Name,Base,Modifiers:[...]}]})
@@ -106,6 +116,12 @@ public final class AuditDirtyChunks {
     // copy passed through auditLevel -> auditChunk. Static so we don't have to
     // thread it through every signature.
     private static volatile Set<String> blocksWithEntity = Set.of();
+    // Maps each registered BE type id to the set of block names whose default
+    // state passes BlockEntityType.isValid. Populated at the top of run().
+    // Read by auditChunk to flag be-type-mismatch: a BE entry whose stored
+    // id points at a registered type that does not accept the block actually
+    // at the BE's coordinate.
+    private static volatile Map<String, Set<String>> beIdToBlocks = Map.of();
     // Per-UUID occurrence counter. Populated by auditEntityList while walking
     // both region/ (lowercase "entities") and entities/ (capital "Entities").
     // End-of-walk reduces to sum(count - 1 where count > 1) = uuid-dups total.
@@ -117,6 +133,7 @@ public final class AuditDirtyChunks {
         LOGGER.info("[The Archive] Starting dirty-chunk audit pass...");
         long start = System.currentTimeMillis();
         blocksWithEntity = computeBlocksWithEntity();
+        beIdToBlocks = computeBeIdToBlocks();
         uuidCounts = new ConcurrentHashMap<>();
         Totals total = new Totals();
 
@@ -171,8 +188,9 @@ public final class AuditDirtyChunks {
             .mapToLong(c -> c.get() - 1)
             .filter(n -> n > 0)
             .sum();
-        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid in {}s",
+        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid in {}s",
                     total.chunks, total.blockEntities, total.ghostBes, total.beCoordMismatch,
+                    total.beTypeMismatch,
                     total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
                     total.bakeComplete, total.bakePartial, total.bakePending,
                     total.poiValidSections, total.poiInvalidSections, elapsedSec);
@@ -193,6 +211,33 @@ public final class AuditDirtyChunks {
             }
         }
         return Set.copyOf(set);
+    }
+
+    /**
+     * Snapshots the runtime map from BE type id to its valid-block set, as
+     * defined by {@link BlockEntityType#isValid(net.minecraft.world.level.block.state.BlockState)}.
+     * Used by the {@code be-type-mismatch} check; the type's accept set is
+     * iterated against {@link Block#defaultBlockState()} for each registered
+     * block, which captures the type's intended block targets even if a
+     * specific block-state property would refine acceptance (the audit walks
+     * NBT, not live BlockStates, so the default-state predicate is the
+     * tightest test we can run without faulting on chunk load).
+     */
+    private static Map<String, Set<String>> computeBeIdToBlocks() {
+        Map<String, Set<String>> result = new HashMap<>();
+        for (BlockEntityType<?> type : BuiltInRegistries.BLOCK_ENTITY_TYPE) {
+            Identifier typeId = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type);
+            if (typeId == null) continue;
+            Set<String> blocks = new HashSet<>();
+            for (Block block : BuiltInRegistries.BLOCK) {
+                if (type.isValid(block.defaultBlockState())) {
+                    Identifier blockId = BuiltInRegistries.BLOCK.getKey(block);
+                    if (blockId != null) blocks.add(blockId.toString());
+                }
+            }
+            result.put(typeId.toString(), Set.copyOf(blocks));
+        }
+        return Map.copyOf(result);
     }
 
     private static Totals auditLevel(ServerLevel level) {
@@ -225,6 +270,7 @@ public final class AuditDirtyChunks {
                         dimTotals.blockEntities += a.blockEntityCount;
                         dimTotals.ghostBes += a.ghostBeCount;
                         dimTotals.beCoordMismatch += a.beCoordMismatchCount;
+                        dimTotals.beTypeMismatch += a.beTypeMismatchCount;
                         dimTotals.entities += a.entityCount;
                         dimTotals.invalidAttrs += a.invalidAttrCount;
                         if (a.legacy) dimTotals.legacyChunks++;
@@ -304,8 +350,9 @@ public final class AuditDirtyChunks {
             }
         }
 
-        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid",
+        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid",
                     dim, dimTotals.chunks, dimTotals.blockEntities, dimTotals.ghostBes, dimTotals.beCoordMismatch,
+                    dimTotals.beTypeMismatch,
                     dimTotals.entities, dimTotals.invalidAttrs, dimTotals.legacyChunks,
                     dimTotals.bakeComplete, dimTotals.bakePartial, dimTotals.bakePending,
                     dimTotals.poiValidSections, dimTotals.poiInvalidSections);
@@ -328,6 +375,7 @@ public final class AuditDirtyChunks {
     }
 
     private record ChunkAudit(int blockEntityCount, int ghostBeCount, int beCoordMismatchCount,
+                              int beTypeMismatchCount,
                               int entityCount, int invalidAttrCount, boolean legacy,
                               BakeStatus bakeStatus) {}
 
@@ -374,7 +422,7 @@ public final class AuditDirtyChunks {
         // bound. DFU'ing first (--upgradeChunks) lifts them to the schema we
         // can validate.
         boolean legacy = root.getCompound("Level").isPresent();
-        if (legacy) return new ChunkAudit(0, 0, 0, 0, 0, true, BakeStatus.PENDING);
+        if (legacy) return new ChunkAudit(0, 0, 0, 0, 0, 0, true, BakeStatus.PENDING);
 
         BakeStatus bakeStatus = classifyBakeStatus(root);
 
@@ -384,7 +432,7 @@ public final class AuditDirtyChunks {
         EntityAudit ea = auditEntityList(root.getListOrEmpty("entities"));
 
         ListTag bes = root.getListOrEmpty("block_entities");
-        if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
+        if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, 0, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
 
         Map<Integer, SectionDecoder> sections = new HashMap<>();
         for (int i = 0; i < root.getListOrEmpty("sections").size(); i++) {
@@ -395,8 +443,10 @@ public final class AuditDirtyChunks {
         }
 
         Set<String> entityBlocks = blocksWithEntity;
+        Map<String, Set<String>> beTypes = beIdToBlocks;
         int ghosts = 0;
         int coordMismatch = 0;
+        int typeMismatch = 0;
         for (int i = 0; i < bes.size(); i++) {
             CompoundTag be = bes.getCompoundOrEmpty(i);
             int x = be.getIntOr("x", 0);
@@ -416,9 +466,25 @@ public final class AuditDirtyChunks {
             String name = dec == null ? null : dec.blockNameAt(x & 15, Math.floorMod(y, 16), z & 15);
             if (name == null || !entityBlocks.contains(name)) {
                 ghosts++;
+            } else {
+                // be-type-mismatch: the block is itself a BE-carrier (so the
+                // ghost-bes predicate above passed), but the BE's stored id
+                // resolves to a registered BlockEntityType whose isValid set
+                // does not include this specific block. MC's chunk-system
+                // load codec rejects these with
+                // IllegalStateException("Invalid block entity ...").
+                // Unknown ids (no map entry) are skipped: those fall under a
+                // separate concern (custom BE types from mods).
+                String beId = be.getStringOr("id", "");
+                if (!beId.isEmpty()) {
+                    Set<String> allowed = beTypes.get(beId);
+                    if (allowed != null && !allowed.contains(name)) {
+                        typeMismatch++;
+                    }
+                }
             }
         }
-        return new ChunkAudit(bes.size(), ghosts, coordMismatch, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
+        return new ChunkAudit(bes.size(), ghosts, coordMismatch, typeMismatch, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
     }
 
     /**
@@ -642,6 +708,7 @@ public final class AuditDirtyChunks {
         long blockEntities;
         long ghostBes;
         long beCoordMismatch;
+        long beTypeMismatch;
         long entities;
         long invalidAttrs;
         long legacyChunks;
@@ -664,6 +731,7 @@ public final class AuditDirtyChunks {
             blockEntities += other.blockEntities;
             ghostBes += other.ghostBes;
             beCoordMismatch += other.beCoordMismatch;
+            beTypeMismatch += other.beTypeMismatch;
             entities += other.entities;
             invalidAttrs += other.invalidAttrs;
             legacyChunks += other.legacyChunks;
