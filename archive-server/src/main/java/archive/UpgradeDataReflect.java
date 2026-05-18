@@ -2,12 +2,15 @@ package archive;
 
 import java.lang.reflect.Field;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.core.Direction8;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.chunk.UpgradeData;
+import net.minecraft.world.level.material.Fluid;
+import net.minecraft.world.ticks.SavedTick;
 
 /**
  * Reflection bridge for {@link UpgradeData}'s package-private fixer registry.
@@ -28,6 +31,8 @@ final class UpgradeDataReflect {
     private static final Set<UpgradeData.BlockFixer> CHUNKY_FIXERS;
     private static final Field UPGRADE_DATA_INDEX_FIELD;
     private static final Field UPGRADE_DATA_SIDES_FIELD;
+    private static final Field UPGRADE_DATA_BLOCK_TICKS_FIELD;
+    private static final Field UPGRADE_DATA_FLUID_TICKS_FIELD;
 
     static {
         try {
@@ -61,6 +66,10 @@ final class UpgradeDataReflect {
             UPGRADE_DATA_INDEX_FIELD.setAccessible(true);
             UPGRADE_DATA_SIDES_FIELD = UpgradeData.class.getDeclaredField("sides");
             UPGRADE_DATA_SIDES_FIELD.setAccessible(true);
+            UPGRADE_DATA_BLOCK_TICKS_FIELD = UpgradeData.class.getDeclaredField("neighborBlockTicks");
+            UPGRADE_DATA_BLOCK_TICKS_FIELD.setAccessible(true);
+            UPGRADE_DATA_FLUID_TICKS_FIELD = UpgradeData.class.getDeclaredField("neighborFluidTicks");
+            UPGRADE_DATA_FLUID_TICKS_FIELD.setAccessible(true);
         } catch (Throwable t) {
             throw new ExceptionInInitializerError(t);
         }
@@ -91,6 +100,24 @@ final class UpgradeDataReflect {
     static EnumSet<Direction8> sides(final UpgradeData ud) {
         try {
             return (EnumSet<Direction8>) UPGRADE_DATA_SIDES_FIELD.get(ud);
+        } catch (IllegalAccessException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<SavedTick<Block>> neighborBlockTicks(final UpgradeData ud) {
+        try {
+            return (List<SavedTick<Block>>) UPGRADE_DATA_BLOCK_TICKS_FIELD.get(ud);
+        } catch (IllegalAccessException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<SavedTick<Fluid>> neighborFluidTicks(final UpgradeData ud) {
+        try {
+            return (List<SavedTick<Fluid>>) UPGRADE_DATA_FLUID_TICKS_FIELD.get(ud);
         } catch (IllegalAccessException ex) {
             throw new IllegalStateException(ex);
         }
