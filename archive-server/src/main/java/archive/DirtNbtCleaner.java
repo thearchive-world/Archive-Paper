@@ -40,15 +40,17 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import org.slf4j.Logger;
 
 /**
  * Standalone post-DFU pass that strips the dirt classes {@link AuditDirtyChunks}
- * measures (invalid-attrs, ghost-bes, BE-coord-mismatch) directly from the
- * region NBT, in parallel, with no chunk-system load. Silences the codec WARN
- * spam these dirt classes produce at runtime serve time.
+ * measures (invalid-attrs, ghost-bes, BE-coord-mismatch, be-type-mismatch)
+ * directly from the region NBT, in parallel, with no chunk-system load.
+ * Silences the codec WARN spam these dirt classes produce at runtime serve
+ * time.
  *
  * <p>Run AFTER {@code --upgradeChunks} (DFU), never on raw 1.12.2: vanilla
  * legacy attribute names (e.g. {@code generic.maxHealth}) fail the same
@@ -57,7 +59,7 @@ import org.slf4j.Logger;
  * are skipped and counted under {@code legacy-chunks}; run {@code --upgradeChunks}
  * first to lift them.
  *
- * <p>Three strips:
+ * <p>Four strips:
  * <ul>
  *   <li>{@code invalid-attrs}: when ANY {@code attributes[*].id} or
  *       {@code attributes[*].modifiers[*].id} fails {@code Identifier.tryParse},
@@ -82,6 +84,15 @@ import org.slf4j.Logger;
  *       expected position from chunk [...]" and drops the BE anyway, so
  *       stripping at upgrade time is silent and strictly equivalent.
  *       {@code region/*.mca} only.</li>
+ *   <li>{@code be-type-mismatch}: drop entries from {@code block_entities}
+ *       whose stored {@code id} resolves to a registered
+ *       {@link BlockEntityType} whose {@code isValid} set does not include
+ *       the block at the BE's coordinate. Block is itself a BE-carrier (so
+ *       the {@code ghost-bes} check above passes), but a different type than
+ *       the BE NBT names. Same {@code IllegalStateException("Invalid block
+ *       entity ...")} from the chunk-system load codec as {@code ghost-bes}.
+ *       Unknown BE ids (custom mod
+ *       types) are kept intact. {@code region/*.mca} only.</li>
  * </ul>
  *
  * <p>Skip-if-clean at the chunk level: no rewrite when zero dirt is found.
@@ -103,6 +114,12 @@ public final class DirtNbtCleaner {
     // the set through five method signatures; the single writer is run() before
     // any worker is submitted.
     private static volatile Set<String> blocksWithEntity = Set.of();
+    // Mirrors AuditDirtyChunks.beIdToBlocks. BE type id -> set of block names
+    // whose default state passes BlockEntityType.isValid. Static so workers
+    // read without threading the map through every signature; same publication
+    // shape as blocksWithEntity (single writer in run() before any worker
+    // submit, volatile read by workers).
+    private static volatile Map<String, Set<String>> beIdToBlocks = Map.of();
     // Inter-chunk dedup map. Populated lazily as workers process chunks; on
     // resume, repopulated read-only from already-completed regions before any
     // pending region is dispatched (see rescanCompletedRegions). First putIfAbsent
@@ -117,6 +134,7 @@ public final class DirtNbtCleaner {
         long startMillis = System.currentTimeMillis();
         int threadCount = ArchiveSettings.upgradeWorkerCount();
         blocksWithEntity = computeBlocksWithEntity();
+        beIdToBlocks = computeBeIdToBlocks();
         uuidMap = new ConcurrentHashMap<>();
         // Downstream smoke tooling greps "Starting dirty-chunk clean" / "Dirty-chunk clean complete";
         // keep both in sync when changing.
@@ -146,10 +164,11 @@ public final class DirtNbtCleaner {
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0) {
-            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
+            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
                          failures.regionCount.get(), failures.chunkCount.get(),
                          totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                          totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
+                         totals.beTypeMismatchStripped.get(),
                          totals.uuidDupsStripped.get(), totals.unparseableUuid.get(), elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
@@ -175,9 +194,10 @@ public final class DirtNbtCleaner {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete clean progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks in {}s. UUID map at exit: {} unique UUIDs.",
+            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks in {}s. UUID map at exit: {} unique UUIDs.",
                         totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                         totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
+                        totals.beTypeMismatchStripped.get(),
                         totals.uuidDupsStripped.get(), totals.unparseableUuid.get(),
                         totals.legacyChunksSkipped.get(), elapsedSec, uuidMap.size());
         }
@@ -375,6 +395,7 @@ public final class DirtNbtCleaner {
         int invalidStripped = 0;
         int ghostStripped = 0;
         int coordMismatchStripped = 0;
+        int typeMismatchStripped = 0;
         int uuidDupsStripped = 0;
         int unparseableUuid = 0;
 
@@ -447,6 +468,7 @@ public final class DirtNbtCleaner {
                 }
 
                 Set<String> entityBlocks = blocksWithEntity;
+                Map<String, Set<String>> beTypes = beIdToBlocks;
                 ListTag rebuiltBEs = new ListTag();
                 boolean anyBEChanged = false;
                 for (int i = 0; i < bes.size(); i++) {
@@ -472,6 +494,20 @@ public final class DirtNbtCleaner {
                         anyBEChanged = true;
                         continue;
                     }
+                    // be-type-mismatch: block IS a BE-carrier (passed the
+                    // ghost check) but the BE's stored id resolves to a
+                    // registered type whose isValid set excludes this block.
+                    // Unknown ids (custom mod BEs) are kept; they fail at
+                    // chunk-system load as a different class.
+                    String beId = be.getStringOr("id", "");
+                    if (!beId.isEmpty()) {
+                        Set<String> allowed = beTypes.get(beId);
+                        if (allowed != null && !allowed.contains(name)) {
+                            typeMismatchStripped++;
+                            anyBEChanged = true;
+                            continue;
+                        }
+                    }
                     rebuiltBEs.add(be);
                 }
                 if (anyBEChanged) {
@@ -481,7 +517,7 @@ public final class DirtNbtCleaner {
         }
 
         if (invalidStripped == 0 && ghostStripped == 0 && coordMismatchStripped == 0
-                && uuidDupsStripped == 0) {
+                && typeMismatchStripped == 0 && uuidDupsStripped == 0) {
             // Skip-if-clean: avoid sector-replacement IO on chunks with no dirt.
             // unparseableUuid is diagnostic only; the entry is kept, no rewrite
             // needed for it alone, but the count still goes into Totals.
@@ -498,6 +534,7 @@ public final class DirtNbtCleaner {
         totals.invalidAttrsStripped.addAndGet(invalidStripped);
         totals.ghostBesStripped.addAndGet(ghostStripped);
         totals.beCoordMismatchStripped.addAndGet(coordMismatchStripped);
+        totals.beTypeMismatchStripped.addAndGet(typeMismatchStripped);
         totals.uuidDupsStripped.addAndGet(uuidDupsStripped);
         totals.unparseableUuid.addAndGet(unparseableUuid);
         return true;
@@ -520,6 +557,30 @@ public final class DirtNbtCleaner {
             }
         }
         return Set.copyOf(set);
+    }
+
+    /**
+     * Mirrors {@link AuditDirtyChunks}'s {@code computeBeIdToBlocks}: BE type
+     * id (e.g. {@code minecraft:hopper}) to the set of block names whose
+     * {@link Block#defaultBlockState} passes {@link BlockEntityType#isValid}.
+     * Used to decide be-type-mismatch on BE entries whose block survives the
+     * ghost-bes test but is the wrong target type for the BE NBT id.
+     */
+    private static Map<String, Set<String>> computeBeIdToBlocks() {
+        Map<String, Set<String>> result = new HashMap<>();
+        for (BlockEntityType<?> type : BuiltInRegistries.BLOCK_ENTITY_TYPE) {
+            Identifier typeId = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type);
+            if (typeId == null) continue;
+            Set<String> blocks = new HashSet<>();
+            for (Block block : BuiltInRegistries.BLOCK) {
+                if (type.isValid(block.defaultBlockState())) {
+                    Identifier blockId = BuiltInRegistries.BLOCK.getKey(block);
+                    if (blockId != null) blocks.add(blockId.toString());
+                }
+            }
+            result.put(typeId.toString(), Set.copyOf(blocks));
+        }
+        return Map.copyOf(result);
     }
 
     private static boolean entityHasInvalidAttribute(CompoundTag entity) {
@@ -839,6 +900,7 @@ public final class DirtNbtCleaner {
         final AtomicLong invalidAttrsStripped = new AtomicLong();
         final AtomicLong ghostBesStripped = new AtomicLong();
         final AtomicLong beCoordMismatchStripped = new AtomicLong();
+        final AtomicLong beTypeMismatchStripped = new AtomicLong();
         final AtomicLong uuidDupsStripped = new AtomicLong();
         final AtomicLong unparseableUuid = new AtomicLong();
         final AtomicLong legacyChunksSkipped = new AtomicLong();
