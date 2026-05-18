@@ -40,10 +40,16 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.PalettedContainer;
+import net.minecraft.world.level.chunk.ProtoChunk;
 import net.minecraft.world.level.chunk.UpgradeData;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import net.minecraft.world.level.chunk.storage.SerializableChunkData;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.ticks.ProtoChunkTicks;
+import ca.spottedleaf.moonrise.patches.starlight.light.StarLightEngine;
+import ca.spottedleaf.moonrise.patches.starlight.light.StarLightInterface;
 import org.slf4j.Logger;
 
 /**
@@ -58,14 +64,27 @@ import org.slf4j.Logger;
  * raw ProtoChunks, and a journal-replay tail pass for cross-region
  * writes.
  *
- * <p>Stage 3 (this commit): own-chunk UpgradeData walk and side-strip
- * handler against a {@link BakeLevelAccessor} stub, with write-back
- * of dirty owned chunks via {@link SerializableChunkData#write}. 3x3
- * border load reads 8 neighbour regions for cross-chunk neighbour
- * reads during the walk. Cross-region writes (LEAVES BFS, CHEST
- * pairing landing outside the 3x3) increment a worker counter and are
- * dropped; the journal-replay tail pass lands in stage 5/6. Heightmap
- * prime and Starlight bake remain TODO for stage 4.
+ * <p>Stage 3 + stage 4 (this state): stage 3 runs the own-chunk UpgradeData
+ * walk and side-strip handler against a {@link BakeLevelAccessor} stub;
+ * stage 4 builds a {@link ProtoChunk} per owned cache entry, primes the
+ * {@link ChunkStatus#FULL} heightmaps, and runs Starlight's
+ * {@link StarLightInterface#lightChunk} against a {@link BakeLightChunkGetter}
+ * over the same 3x3 cache, then merges the baked heightmaps and section light
+ * nibbles back into the parsed record via {@link SerializableChunkData#copyOf}.
+ * Write-back is unchanged: {@link SerializableChunkData#write} via {@link
+ * NbtIo} through the still-open center {@link RegionFile}. Skip-if-baked
+ * fires when {@link UpgradeData} is empty, {@code lightCorrect} is true,
+ * and the heightmap map is populated.
+ *
+ * <p>Forfeits still owed (later stages):
+ * <ul>
+ *   <li>{@code UpgradeData.neighbor_block_ticks} /
+ *       {@code neighbor_fluid_ticks} replay (stage 5).</li>
+ *   <li>Cross-region LEAVES BFS / CHEST writes landing outside the 3x3
+ *       working set (stage 6, journal piggy-backs on stage 5).</li>
+ *   <li>{@code bake-status} audit counters (stage 8).</li>
+ *   <li>Bake-specific smoke harnesses (stage 9).</li>
+ * </ul>
  */
 public final class BakeLightPass {
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -268,13 +287,23 @@ public final class BakeLightPass {
             loadBorder(info, level, regionFolder, rx, rz, cache);
 
             BakeLevelAccessor accessor = new BakeLevelAccessor(level, cache);
+            BakeLightChunkGetter lightAccess = new BakeLightChunkGetter(level, cache);
+            StarLightInterface lightInterface = new StarLightInterface(
+                lightAccess,
+                level.dimensionType().hasSkyLight(),
+                true,
+                level.getChunkSource().getLightEngine()
+            );
             long baked = 0;
             for (CachedChunk entry : new ArrayList<>(cache.values())) {
                 if (!entry.owned) continue;
-                if (entry.data.upgradeData().isEmpty()) continue;
+                boolean upgradeNeeded = !entry.data.upgradeData().isEmpty();
+                boolean lightNeeded = !entry.data.lightCorrect() || entry.data.heightmaps().isEmpty();
+                if (!upgradeNeeded && !lightNeeded) continue;
                 ChunkPos pos = entry.data.chunkPos();
                 try {
-                    bakeChunkUpgrade(accessor, level, entry, pos);
+                    if (upgradeNeeded) bakeChunkUpgrade(accessor, level, entry, pos);
+                    bakeChunkLight(level, lightInterface, entry);
                     entry.dirty = true;
                     baked++;
                 } catch (Throwable t) {
@@ -293,7 +322,7 @@ public final class BakeLightPass {
                 if (!entry.dirty || !entry.owned) continue;
                 ChunkPos pos = entry.data.chunkPos();
                 try {
-                    writeChunk(region, pos, stripUpgradeData(entry.data));
+                    writeChunk(region, pos, entry.data);
                 } catch (Throwable t) {
                     String chunkKey = regionLabel + " writeback(" + pos.x() + "," + pos.z() + ")";
                     LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
@@ -500,35 +529,76 @@ public final class BakeLightPass {
     }
 
     /**
-     * Rebuild a {@link SerializableChunkData} record with {@link
-     * UpgradeData#EMPTY} substituted for the chunk's upgrade blob. All other
-     * fields (including the mutated {@code sectionData} list) reuse the
-     * existing references; {@link SerializableChunkData#write} will skip the
-     * "UpgradeData" NBT key entirely when isEmpty() is true.
+     * Per-chunk light bake: prime heightmaps and run Starlight against the
+     * cache entry's lazily-built {@link ProtoChunk}, then merge the freshly
+     * baked heightmaps and section light nibbles back into {@code entry.data}
+     * along with the UpgradeData strip from the own-chunk walk and
+     * {@code lightCorrect=true}.
      *
-     * <p>{@code neighbor_block_ticks} and {@code neighbor_fluid_ticks} on the
-     * UpgradeData blob get dropped along with everything else; stage 5 will
-     * re-route these to the target chunks' on-disk tick lists. Acceptable
-     * stage 3 forfeit (1.12.2-era source chunks rarely carry neighbour ticks
-     * compared to Indices/Sides).
+     * <p>{@link SerializableChunkData#copyOf} produces {@link LevelChunkSection}
+     * copies on the returned record (each section is {@code .copy()}'d), which
+     * decouples disk-bound state from the in-cache sections the bake walk and
+     * cross-region neighbour reads have been mutating. The merge then re-uses
+     * entities, block entities, packed ticks, structure data, and PDC verbatim
+     * from the original parsed record.
      */
-    private static SerializableChunkData stripUpgradeData(SerializableChunkData original) {
+    private static void bakeChunkLight(ServerLevel level, StarLightInterface lightInterface, CachedChunk entry) {
+        ProtoChunk pc = entry.protoChunk(level);
+        Heightmap.primeHeightmaps(pc, ChunkStatus.FULL.heightmapsAfter());
+        Boolean[] empty = StarLightEngine.getEmptySectionsForChunk(pc);
+        lightInterface.lightChunk(pc, empty);
+        pc.setLightCorrect(true);
+        SerializableChunkData baked = SerializableChunkData.copyOf(level, pc);
+        entry.data = mergeBaked(entry.data, baked);
+    }
+
+    /**
+     * Merge a fresh bake output back into the parsed-from-disk record. The bake
+     * contributes {@code sectionData} (with Starlight nibbles), {@code heightmaps},
+     * and the {@code lightCorrect=true} flag; everything else (entities, block
+     * entities, packed ticks, structure data, PDC, etc.) is preserved from the
+     * original. {@link UpgradeData#EMPTY} is substituted unconditionally; a chunk
+     * that reaches this point is guaranteed to have been through either the
+     * own-chunk UpgradeData walk or skip-if-current (in which case the
+     * original was already empty).
+     *
+     * <p>Status promote to {@link ChunkStatus#LIGHT}: chunks the source world
+     * saved at status below LIGHT (mid-generation NOISE / SURFACE / CARVERS /
+     * FEATURES / INITIALIZE_LIGHT) get bumped. Both
+     * {@code SerializableChunkData.write} (the {@code starlight.light_version}
+     * tag write) and {@code SaveUtil.loadLightHookReal} (the loader's nibble
+     * read into {@code starlight$blockNibbles}/{@code skyNibbles}) gate on
+     * {@code status.isOrAfter(LIGHT)}; without the bump the bake's computed
+     * nibbles round-trip to disk but the loader rejects them, {@code
+     * lightCorrect=false}, and the chunk system advances LIGHT->SPAWN->FULL on
+     * first load, re-invoking {@code ChunkStatusTasks.LIGHT} ({@code lightEngine
+     * ().lightChunk}) and paying the lazy cost the bake was meant to eliminate.
+     * {@code StarLightEngine.light} forces the self chunk into the engine cache
+     * without {@code canUseChunk} filtering, so the bake's light computation
+     * already works on sub-LIGHT chunks today; only the marker write was being
+     * suppressed. SPAWN and FULL still run on first load identically to before;
+     * only the LIGHT step moves from gameplay-time to bake-time.
+     */
+    private static SerializableChunkData mergeBaked(SerializableChunkData original, SerializableChunkData baked) {
+        ChunkStatus promotedStatus = original.chunkStatus().isOrAfter(ChunkStatus.LIGHT)
+            ? original.chunkStatus()
+            : ChunkStatus.LIGHT;
         return new SerializableChunkData(
             original.containerFactory(),
             original.chunkPos(),
             original.minSectionY(),
             original.lastUpdateTime(),
             original.inhabitedTime(),
-            original.chunkStatus(),
+            promotedStatus,
             original.blendingData(),
             original.belowZeroRetrogen(),
             UpgradeData.EMPTY,
             original.carvingMask(),
-            original.heightmaps(),
+            baked.heightmaps(),
             original.packedTicks(),
             original.postProcessingSections(),
-            original.lightCorrect(),
-            original.sectionData(),
+            true,
+            baked.sectionData(),
             original.entities(),
             original.blockEntities(),
             original.structureData(),
@@ -642,6 +712,7 @@ public final class BakeLightPass {
         final boolean owned;
         boolean dirty;
         private LevelChunkSection @org.jspecify.annotations.Nullable [] sectionsByIndex;
+        private @org.jspecify.annotations.Nullable ProtoChunk protoChunk;
 
         CachedChunk(SerializableChunkData data, boolean owned) {
             this.data = data;
@@ -657,6 +728,35 @@ public final class BakeLightPass {
         LevelChunkSection sectionAt(final ServerLevel level, final int blockY) {
             int sectionIndex = level.getSectionIndexFromSectionY(blockY >> 4);
             return sectionByIndex(level, sectionIndex);
+        }
+
+        /**
+         * Lazily build (and cache) a {@link ProtoChunk} backed by the same
+         * {@link LevelChunkSection} array the cross-chunk reads and the
+         * own-chunk walk have been mutating. {@link UpgradeData#EMPTY} on the
+         * proto: by the time the light bake runs, the own-chunk walk has
+         * already played the UpgradeData side effects, and the light bake
+         * itself does not consult {@code chunk.getUpgradeData()}. Persisted status is restored from the
+         * parsed record so {@link SerializableChunkData#copyOf}'s
+         * {@code canBeSerialized()} guard passes and the heightmap-after set
+         * filtering matches what was on disk.
+         */
+        ProtoChunk protoChunk(final ServerLevel level) {
+            if (protoChunk != null) return protoChunk;
+            ensureSectionArray(level);
+            ProtoChunk pc = new ProtoChunk(
+                data.chunkPos(),
+                UpgradeData.EMPTY,
+                sectionsByIndex,
+                ProtoChunkTicks.load(data.packedTicks().blocks()),
+                ProtoChunkTicks.load(data.packedTicks().fluids()),
+                level,
+                level.palettedContainerFactory(),
+                null
+            );
+            pc.setPersistedStatus(data.chunkStatus());
+            protoChunk = pc;
+            return pc;
         }
 
         private void ensureSectionArray(final ServerLevel level) {
