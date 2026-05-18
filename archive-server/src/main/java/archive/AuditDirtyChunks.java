@@ -188,11 +188,11 @@ public final class AuditDirtyChunks {
             .mapToLong(c -> c.get() - 1)
             .filter(n -> n > 0)
             .sum();
-        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid in {}s",
+        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid in {}s",
                     total.chunks, total.blockEntities, total.ghostBes, total.beCoordMismatch,
                     total.beTypeMismatch,
                     total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
-                    total.bakeComplete, total.bakePartial, total.bakePending,
+                    total.bakeComplete, total.bakePartial, total.bakePending, total.bakeIneligible,
                     total.poiValidSections, total.poiInvalidSections, elapsedSec);
     }
 
@@ -278,6 +278,7 @@ public final class AuditDirtyChunks {
                             case COMPLETE -> dimTotals.bakeComplete++;
                             case PARTIAL -> dimTotals.bakePartial++;
                             case PENDING -> dimTotals.bakePending++;
+                            case INELIGIBLE -> dimTotals.bakeIneligible++;
                         }
                         regionProgress.chunkDone();
                     }
@@ -350,11 +351,11 @@ public final class AuditDirtyChunks {
             }
         }
 
-        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} poi-valid, {} poi-invalid",
+        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid",
                     dim, dimTotals.chunks, dimTotals.blockEntities, dimTotals.ghostBes, dimTotals.beCoordMismatch,
                     dimTotals.beTypeMismatch,
                     dimTotals.entities, dimTotals.invalidAttrs, dimTotals.legacyChunks,
-                    dimTotals.bakeComplete, dimTotals.bakePartial, dimTotals.bakePending,
+                    dimTotals.bakeComplete, dimTotals.bakePartial, dimTotals.bakePending, dimTotals.bakeIneligible,
                     dimTotals.poiValidSections, dimTotals.poiInvalidSections);
         return dimTotals;
     }
@@ -382,7 +383,7 @@ public final class AuditDirtyChunks {
     private record EntityAudit(int entityCount, int invalidAttrCount) {}
 
     /**
-     * Three-state classification of {@code --bakeLight} progress on a single
+     * Four-state classification of {@code --bakeLight} progress on a single
      * post-1.18 chunk:
      * <ul>
      *   <li>{@code COMPLETE}: {@code isLightOn} present AND
@@ -400,9 +401,17 @@ public final class AuditDirtyChunks {
      *       {@code Level}-wrapped chunks classify here unconditionally (they
      *       must run through {@code --upgradeChunks} before the bake can touch
      *       them).</li>
+     *   <li>{@code INELIGIBLE}: the chunk has no {@code Status} string at root,
+     *       so {@code SerializableChunkData.parse} returns null and the bake
+     *       silently skips. The canonical case is the Bobby Fabric mod (a
+     *       client-side render-distance extender) writing a minimal-NBT
+     *       render-cache snapshot with sections + heightmaps but no Status,
+     *       isLightOn, InhabitedTime, or LastUpdate. Classifying these
+     *       separately keeps the {@code bake-partial} bucket reflective of
+     *       chunks the bake actually tried to process.</li>
      * </ul>
      */
-    private enum BakeStatus { COMPLETE, PARTIAL, PENDING }
+    private enum BakeStatus { COMPLETE, PARTIAL, PENDING, INELIGIBLE }
 
     private static ChunkAudit auditChunk(RegionFile rf, ChunkPos pos) {
         CompoundTag root;
@@ -505,6 +514,14 @@ public final class AuditDirtyChunks {
      * Indices and Sides, missing chunks that still carry neighbour ticks.
      */
     private static BakeStatus classifyBakeStatus(CompoundTag root) {
+        // Status absent (or wrong type) makes SerializableChunkData.parse
+        // return null at line 145, so BakeLightPass.loadCenter silently skips
+        // and the chunk never moves toward COMPLETE. Bobby mod cache shape:
+        // sections + Heightmaps present but Status / isLightOn / InhabitedTime
+        // / LastUpdate absent. Classify
+        // first; the marker counts below are irrelevant on a chunk the bake
+        // cannot even parse.
+        if (root.getString("Status").isEmpty()) return BakeStatus.INELIGIBLE;
         boolean hasLightOn = root.get("isLightOn") != null;
         boolean hasLightVersion = root.getIntOr(SaveUtil.STARLIGHT_VERSION_TAG, -1) == SaveUtil.STARLIGHT_LIGHT_VERSION;
         CompoundTag heightmaps = root.getCompoundOrEmpty("Heightmaps");
@@ -719,6 +736,7 @@ public final class AuditDirtyChunks {
         long bakeComplete;
         long bakePartial;
         long bakePending;
+        long bakeIneligible;
         // POI section counters, populated by the poi/ pass. Document disk
         // state of poi/*.mca (written by a runtime chunk-system FULL
         // transition); both are typically 0 on a post-pipeline world since
@@ -738,6 +756,7 @@ public final class AuditDirtyChunks {
             bakeComplete += other.bakeComplete;
             bakePartial += other.bakePartial;
             bakePending += other.bakePending;
+            bakeIneligible += other.bakeIneligible;
             poiValidSections += other.poiValidSections;
             poiInvalidSections += other.poiInvalidSections;
         }
