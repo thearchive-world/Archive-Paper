@@ -2,6 +2,7 @@ package archive;
 
 import com.mojang.logging.LogUtils;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
@@ -15,7 +16,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.ticks.SavedTick;
 import net.minecraft.world.ticks.TickPriority;
 import org.slf4j.Logger;
@@ -27,11 +32,12 @@ import org.slf4j.Logger;
  * during the bake walk; the journal-replay tail pass drains every worker's
  * journal after all regions are done, then deletes the files.
  *
- * <p>Stage 5 emits only tick discriminants (3 and 4). Discriminants 1
- * (packed block state, LEAVES BFS / side-strip / CHEST property) and 2
- * (BlockEntity NBT, CHEST contents swap) are reserved for stage 6; the
- * record format includes an explicit payload length so unknown
- * discriminants can be skipped without breaking the parse loop.
+ * <p>Emits four discriminants: 1 (packed BlockState id, written
+ * by LEAVES BFS, side-strip, and CHEST property changes that land outside
+ * the worker's owned region), 2 (BlockEntity NBT, written by CHEST
+ * {@code swapContents} on cross-region pairs), 3 (block tick), and 4
+ * (fluid tick). The record format includes an explicit payload length so
+ * unknown discriminants can be skipped without breaking the parse loop.
  *
  * <h2>Record layout</h2>
  * <pre>
@@ -49,8 +55,14 @@ import org.slf4j.Logger;
  *
  * <h3>Payload by discriminant</h3>
  * <ul>
- *   <li>{@link #DISCRIMINANT_BLOCK_STATE} — int packed block-state id (stage 6).</li>
- *   <li>{@link #DISCRIMINANT_BLOCK_ENTITY_NBT} — block-entity NBT bytes (stage 6).</li>
+ *   <li>{@link #DISCRIMINANT_BLOCK_STATE}: int packed block-state id, encoded
+ *       via {@link Block#BLOCK_STATE_REGISTRY} {@code .getId}. Per-run only;
+ *       valid as long as the BlockState registry layout does not shuffle
+ *       between writer and reader, which holds inside a single bake run.</li>
+ *   <li>{@link #DISCRIMINANT_BLOCK_ENTITY_NBT}: raw NBT bytes from
+ *       {@link NbtIo#write}; the embedded x/y/z fields carry the target
+ *       block position so the tail pass can index by it without consulting
+ *       the record header.</li>
  *   <li>{@link #DISCRIMINANT_BLOCK_TICK}: short type-name length, UTF-8 type name,
  *       int delay, byte priority ordinal.</li>
  *   <li>{@link #DISCRIMINANT_FLUID_TICK}: same shape as block tick.</li>
@@ -96,6 +108,42 @@ final class BakeLightJournal implements AutoCloseable {
         Files.createDirectories(path.getParent());
         rawOut = new FileOutputStream(path.toFile(), true);
         out = new DataOutputStream(new BufferedOutputStream(rawOut, 64 * 1024));
+    }
+
+    /**
+     * Append a single block-state write targeted at a cross-region block
+     * position. The encoded payload is one int: the packed BlockState id from
+     * {@link Block#BLOCK_STATE_REGISTRY}. The tail pass decodes via
+     * {@code BLOCK_STATE_REGISTRY.byId} on the same JVM run.
+     */
+    void appendBlockState(final Identifier dim, final BlockPos pos, final BlockState state) throws IOException {
+        appendHeader(dim, pos);
+        int packed = Block.BLOCK_STATE_REGISTRY.getId(state);
+        out.writeByte(DISCRIMINANT_BLOCK_STATE);
+        out.writeInt(4);
+        out.writeInt(packed);
+        recordsWritten++;
+    }
+
+    /**
+     * Append a single BlockEntity NBT write targeted at a cross-region block
+     * position. The payload is the byte image of the BE's
+     * {@link net.minecraft.world.level.block.entity.BlockEntity#saveWithFullMetadata}
+     * tag via {@link NbtIo#write}; the embedded x/y/z fields fully
+     * disambiguate the destination, but we still write the header so the
+     * tail pass can group records by chunk without parsing the payload.
+     */
+    void appendBlockEntity(final Identifier dim, final BlockPos pos, final CompoundTag nbt) throws IOException {
+        appendHeader(dim, pos);
+        ByteArrayOutputStream buf = new ByteArrayOutputStream(256);
+        try (DataOutputStream dos = new DataOutputStream(buf)) {
+            NbtIo.write(nbt, dos);
+        }
+        byte[] bytes = buf.toByteArray();
+        out.writeByte(DISCRIMINANT_BLOCK_ENTITY_NBT);
+        out.writeInt(bytes.length);
+        out.write(bytes);
+        recordsWritten++;
     }
 
     /** Append a single block-tick record. */
@@ -283,6 +331,34 @@ final class BakeLightJournal implements AutoCloseable {
                 }
                 records.add(new Record(dim, targetChunkX, targetChunkZ, new BlockPos(bx, by, bz), discriminant, payload));
             }
+        }
+    }
+
+    /** Decode a packed-block-state payload back into a {@link BlockState}. */
+    static @org.jspecify.annotations.Nullable BlockState decodeBlockState(final Record record) {
+        if (record.discriminant != DISCRIMINANT_BLOCK_STATE) {
+            throw new IllegalArgumentException("Not a block-state discriminant: " + record.discriminant);
+        }
+        if (record.payload.length != 4) {
+            throw new IllegalStateException("Block-state payload must be 4 bytes, got " + record.payload.length);
+        }
+        try (DataInputStream in = new DataInputStream(new java.io.ByteArrayInputStream(record.payload))) {
+            int packed = in.readInt();
+            return Block.BLOCK_STATE_REGISTRY.byId(packed);
+        } catch (IOException ex) {
+            throw new IllegalStateException("malformed block-state payload", ex);
+        }
+    }
+
+    /** Decode a BlockEntity NBT payload via {@link NbtIo#read}. */
+    static CompoundTag decodeBlockEntity(final Record record) {
+        if (record.discriminant != DISCRIMINANT_BLOCK_ENTITY_NBT) {
+            throw new IllegalArgumentException("Not a block-entity discriminant: " + record.discriminant);
+        }
+        try (DataInputStream in = new DataInputStream(new java.io.ByteArrayInputStream(record.payload))) {
+            return NbtIo.read(in);
+        } catch (IOException ex) {
+            throw new IllegalStateException("malformed block-entity payload", ex);
         }
     }
 

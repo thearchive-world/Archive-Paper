@@ -42,6 +42,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -64,8 +65,7 @@ import org.slf4j.Logger;
 /**
  * Bake-light pass. Strips runtime load-time cost off legacy chunks by
  * baking isLightOn, finalized heightmaps, and resolved UpgradeData
- * (Indices, Sides, neighbour-tick lists) into the on-disk chunk. Design:
- * docs/superpowers/specs/2026-05-17-bake-light-design.md. Reuses
+ * (Indices, Sides, neighbour-tick lists) into the on-disk chunk. Reuses
  * {@link DirectNbtUpgrader}'s pass-chain envelope (worker pool,
  * tick-thread pump, per-future deadline, try-catch, resumable progress
  * file). New parts are the 3x3 region working set, per-worker chunk
@@ -73,29 +73,30 @@ import org.slf4j.Logger;
  * raw ProtoChunks, and a journal-replay tail pass for cross-region
  * writes.
  *
- * <p>Stages 3-5 (this state): stage 3 runs the own-chunk UpgradeData walk and
- * side-strip handler against a {@link BakeLevelAccessor} stub; stage 4 builds
- * a {@link ProtoChunk} per owned cache entry, primes the
- * {@link ChunkStatus#FULL} heightmaps, and runs Starlight's
- * {@link StarLightInterface#lightChunk} against a {@link BakeLightChunkGetter}
- * over the same 3x3 cache, then merges the baked heightmaps and section light
- * nibbles back into the parsed record via {@link SerializableChunkData#copyOf};
- * stage 5 replays {@code UpgradeData.neighbor_block_ticks} and
- * {@code neighbor_fluid_ticks} into target chunks' on-disk tick lists,
- * routing intra-region appends through the worker cache and cross-region
- * appends through a per-worker {@link BakeLightJournal} drained by a final
- * tail pass. Skip-if-baked fires only when {@link UpgradeData} is empty,
+ * <p>For each owned chunk with outstanding work: run the own-chunk
+ * UpgradeData walk and side-strip handler against a {@link
+ * BakeLevelAccessor} stub; build a {@link ProtoChunk} backed by the
+ * cached {@link LevelChunkSection} array, prime the {@link
+ * ChunkStatus#FULL} heightmaps, and run Starlight's {@link
+ * StarLightInterface#lightChunk} against a {@link BakeLightChunkGetter}
+ * over the same 3x3 cache; merge the baked heightmaps and section light
+ * nibbles back into the parsed record via {@link
+ * SerializableChunkData#copyOf}. Replay {@code
+ * UpgradeData.neighbor_block_ticks} and {@code neighbor_fluid_ticks}
+ * into target chunks' on-disk tick lists, routing intra-region appends
+ * through the worker cache and cross-region appends through a
+ * per-worker {@link BakeLightJournal} drained by a final tail pass.
+ * Cross-region writes from the walk (LEAVES BFS, side-strip, CHEST
+ * swapContents) land in the same journal: {@link
+ * BakeLightJournal#DISCRIMINANT_BLOCK_STATE} for packed BlockState ids,
+ * {@link BakeLightJournal#DISCRIMINANT_BLOCK_ENTITY_NBT} for raw BE
+ * NBT. The tail pass dispatches on discriminant: tick records append to
+ * {@link ChunkAccess.PackedTicks}, block-state records write into the
+ * target section's {@link PalettedContainer}, BE-NBT records replace
+ * (or append) the matching {@link SerializableChunkData#blockEntities}
+ * entry. Skip-if-baked fires only when {@link UpgradeData} is empty,
  * carries no neighbour ticks, {@code lightCorrect} is true, and the
  * heightmap map is populated.
- *
- * <p>Forfeits still owed (later stages):
- * <ul>
- *   <li>Cross-region LEAVES BFS / CHEST writes landing outside the 3x3
- *       working set (stage 6; journal payload discriminants 1 and 2 are
- *       reserved but unused).</li>
- *   <li>{@code bake-status} audit counters (stage 8).</li>
- *   <li>Bake-specific smoke harnesses (stage 9).</li>
- * </ul>
  */
 public final class BakeLightPass {
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -170,13 +171,17 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), {} cross-region writes dropped in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}) in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
                 failures.ticksDroppedMissingTarget.get(),
                 failures.ticksDroppedDedup.get(),
-                failures.crossRegionWritesDropped.get(), elapsedSec);
+                failures.crossRegionWritesJournaled.get(),
+                failures.crossRegionWritesApplied.get(),
+                failures.crossRegionWritesMissingTarget.get(),
+                failures.crossRegionWritesIoFailed.get(),
+                elapsedSec);
         }
     }
 
@@ -317,7 +322,7 @@ public final class BakeLightPass {
             parsed = loadCenter(region, level, cache, regionLabel, failures, rx, rz);
             loadBorder(info, level, regionFolder, rx, rz, cache);
 
-            BakeLevelAccessor accessor = new BakeLevelAccessor(level, cache);
+            BakeLevelAccessor accessor = new BakeLevelAccessor(level, cache, journal, dim);
             BakeLightChunkGetter lightAccess = new BakeLightChunkGetter(level, cache);
             StarLightInterface lightInterface = new StarLightInterface(
                 lightAccess,
@@ -359,8 +364,33 @@ public final class BakeLightPass {
             //      which calls file.force(true).
             //   4. Caller (the pool.submit lambda) appends the region key
             //      to the progress file after this method returns.
+            // Step 1a: journal non-owned dirty BE indices BEFORE owned write-backs
+            // happen. Vanilla's CHEST.swapContents mutates BEs on both sides of
+            // a cross-region chest pair; the journal captures the non-owned
+            // half (the owned half lands in step 1b's blockEntities() rebuild).
+            // Counted as journaled writes so the totals add up against the
+            // tail-pass counter family.
+            for (CachedChunk entry : cache.values()) {
+                if (entry.owned) continue;
+                if (!entry.blockEntityIndexDirty()) continue;
+                try {
+                    long before = journal.recordsWritten();
+                    entry.journalBlockEntityIndex(accessor, journal, dim);
+                    long appended = journal.recordsWritten() - before;
+                    accessor.crossRegionWritesJournaled.addAndGet(appended);
+                } catch (IOException ex) {
+                    LOGGER.error("[The Archive] bake-light {}: BE-index journal failed for non-owned c({},{}): {}",
+                                 regionLabel, entry.data.chunkPos().x(), entry.data.chunkPos().z(), ex.getMessage());
+                    accessor.crossRegionWritesIoFailed.incrementAndGet();
+                }
+            }
+
             for (CachedChunk entry : cache.values()) {
                 if (!entry.owned) continue;
+                if (entry.blockEntityIndexDirty()) {
+                    entry.flushBlockEntityIndexInto(accessor);
+                    entry.dirty = true;
+                }
                 if (entry.hasPendingTicks()) {
                     entry.flushPendingTicksInto(level);
                     entry.dirty = true;
@@ -385,7 +415,8 @@ public final class BakeLightPass {
                 throw ex;
             }
 
-            failures.crossRegionWritesDropped.addAndGet(accessor.crossRegionWritesDropped.get());
+            failures.crossRegionWritesJournaled.addAndGet(accessor.crossRegionWritesJournaled.get());
+            failures.crossRegionWritesIoFailed.addAndGet(accessor.crossRegionWritesIoFailed.get());
         }
         return parsed;
     }
@@ -540,7 +571,7 @@ public final class BakeLightPass {
                 if (level == null) {
                     LOGGER.warn("[The Archive]   bake-light tail pass: unknown dim {} ({} records dropped)",
                                 tk.dim(), entry.getValue().size());
-                    failures.ticksDroppedMissingTarget.addAndGet(entry.getValue().size());
+                    countMissingTarget(entry.getValue(), failures);
                     continue;
                 }
                 int rx = tk.chunkX() >> 5;
@@ -551,14 +582,14 @@ public final class BakeLightPass {
                 if (region == null) {
                     region = openRegionForTailPass(server, level, rx, rz);
                     if (region == null) {
-                        failures.ticksDroppedMissingTarget.addAndGet(entry.getValue().size());
+                        countMissingTarget(entry.getValue(), failures);
                         continue;
                     }
                     dimRegions.put(regionKey, region);
                 }
                 ChunkPos pos = new ChunkPos(tk.chunkX(), tk.chunkZ());
                 try {
-                    if (replayTicksAtTarget(level, region, pos, entry.getValue(), failures)) {
+                    if (replayRecordsAtTarget(level, region, pos, entry.getValue(), failures)) {
                         chunksApplied++;
                     }
                 } catch (Throwable t) {
@@ -620,33 +651,71 @@ public final class BakeLightPass {
     }
 
     /**
-     * Apply all journal records for a single target chunk. Loads the chunk
-     * via raw {@link NbtIo}; decodes each tick record, resolves the sentinel
-     * against the target's block state, dedup-checks via
-     * {@link SavedTick#UNIQUE_TICK_HASH}; if any record contributes a new
-     * tick, rebuilds {@link SerializableChunkData} with extended
-     * {@link ChunkAccess.PackedTicks} and writes back. Returns {@code true}
-     * iff at least one new tick was applied (and a write-back happened).
+     * Increment the missing-target counter family for the given record list.
+     * Splits the count between the tick-replay counter family
+     * ({@link Failures#ticksDroppedMissingTarget}) and the cross-region write
+     * counter family ({@link Failures#crossRegionWritesMissingTarget})
+     * so the pass-end summary doesn't conflate.
+     */
+    private static void countMissingTarget(List<BakeLightJournal.Record> records, Failures failures) {
+        for (BakeLightJournal.Record rec : records) {
+            switch (rec.discriminant()) {
+                case BakeLightJournal.DISCRIMINANT_BLOCK_TICK, BakeLightJournal.DISCRIMINANT_FLUID_TICK ->
+                    failures.ticksDroppedMissingTarget.incrementAndGet();
+                case BakeLightJournal.DISCRIMINANT_BLOCK_STATE, BakeLightJournal.DISCRIMINANT_BLOCK_ENTITY_NBT ->
+                    failures.crossRegionWritesMissingTarget.incrementAndGet();
+                default -> {}
+            }
+        }
+    }
+
+    /**
+     * Apply all journal records for a single target chunk. Loads the chunk via
+     * raw {@link NbtIo}, partitions records by discriminant, applies each
+     * group to the parsed {@link SerializableChunkData}, and writes back if
+     * anything changed. Returns {@code true} iff a write-back happened.
+     *
+     * <p>Handled discriminants:
+     * <ul>
+     *   <li>{@link BakeLightJournal#DISCRIMINANT_BLOCK_TICK} /
+     *       {@link BakeLightJournal#DISCRIMINANT_FLUID_TICK}: append to
+     *       {@link ChunkAccess.PackedTicks} after sentinel resolution and
+     *       {@link SavedTick#UNIQUE_TICK_HASH} dedup against the existing list
+     *       and the in-batch new list.</li>
+     *   <li>{@link BakeLightJournal#DISCRIMINANT_BLOCK_STATE}: decode the
+     *       packed-int payload via {@link Block#BLOCK_STATE_REGISTRY} and
+     *       write into the target section's {@link PalettedContainer}. If the
+     *       section is absent on disk the write is dropped with the missing-
+     *       target counter; targets that fall inside an existing section are
+     *       guaranteed (the source chunk's bake walk can only emit writes to
+     *       its 1-chunk neighbourhood and those chunks must exist for the
+     *       walk to have observed them).</li>
+     *   <li>{@link BakeLightJournal#DISCRIMINANT_BLOCK_ENTITY_NBT}: decode
+     *       the NBT payload via {@link NbtIo#read}; the embedded x/y/z fields
+     *       carry the BE position. Replace any existing entry in
+     *       {@link SerializableChunkData#blockEntities} that targets the same
+     *       position; append if absent. Last writer wins on duplicates.</li>
+     * </ul>
      *
      * <p>Light-bake state ({@code lightCorrect=true}, heightmaps,
      * UpgradeData=EMPTY) is preserved verbatim through the rebuild: the
      * target chunk was baked in the worker pass, the tail pass only extends
-     * the tick lists.
+     * tick lists and section/BE state.
      */
-    private static boolean replayTicksAtTarget(
+    private static boolean replayRecordsAtTarget(
         ServerLevel level, RegionFile region, ChunkPos pos, List<BakeLightJournal.Record> records, Failures failures
     ) throws IOException {
         CompoundTag chunkTag;
         try (DataInputStream in = region.getChunkDataInputStream(pos)) {
             if (in == null) {
-                failures.ticksDroppedMissingTarget.addAndGet(records.size());
+                countMissingTarget(records, failures);
                 return false;
             }
             chunkTag = NbtIo.read(in);
         }
         SerializableChunkData data = SerializableChunkData.parse(level, level.palettedContainerFactory(), chunkTag);
         if (data == null) {
-            failures.ticksDroppedMissingTarget.addAndGet(records.size());
+            countMissingTarget(records, failures);
             return false;
         }
 
@@ -657,49 +726,79 @@ public final class BakeLightPass {
 
         List<SavedTick<Block>> newBlocks = null;
         List<SavedTick<Fluid>> newFluids = null;
+        boolean sectionMutated = false;
+        // Per-position BE replacements applied to the parsed list. The journal
+        // can carry multiple BE records for the same position (a chunk on the
+        // boundary of two regions might receive two passes' worth of writes);
+        // last writer wins.
+        Map<Long, CompoundTag> beReplacements = null;
 
         for (BakeLightJournal.Record rec : records) {
             try {
-                if (rec.discriminant() == BakeLightJournal.DISCRIMINANT_BLOCK_TICK) {
-                    BakeLightJournal.DecodedTick decoded = BakeLightJournal.decodeTick(rec);
-                    Block type = resolveBlockType(level, data, decoded);
-                    if (type == null) {
-                        failures.ticksDroppedMissingTarget.incrementAndGet();
-                        continue;
+                switch (rec.discriminant()) {
+                    case BakeLightJournal.DISCRIMINANT_BLOCK_TICK -> {
+                        BakeLightJournal.DecodedTick decoded = BakeLightJournal.decodeTick(rec);
+                        Block type = resolveBlockType(level, data, decoded);
+                        if (type == null) {
+                            failures.ticksDroppedMissingTarget.incrementAndGet();
+                            continue;
+                        }
+                        SavedTick<Block> tick = new SavedTick<>(type, decoded.pos(), decoded.delay(), decoded.priority());
+                        if (blockDedup.add(tick)) {
+                            if (newBlocks == null) newBlocks = new ArrayList<>();
+                            newBlocks.add(tick);
+                            failures.ticksReplayed.incrementAndGet();
+                        } else {
+                            failures.ticksDroppedDedup.incrementAndGet();
+                        }
                     }
-                    SavedTick<Block> tick = new SavedTick<>(type, decoded.pos(), decoded.delay(), decoded.priority());
-                    if (blockDedup.add(tick)) {
-                        if (newBlocks == null) newBlocks = new ArrayList<>();
-                        newBlocks.add(tick);
-                        failures.ticksReplayed.incrementAndGet();
-                    } else {
-                        failures.ticksDroppedDedup.incrementAndGet();
+                    case BakeLightJournal.DISCRIMINANT_FLUID_TICK -> {
+                        BakeLightJournal.DecodedTick decoded = BakeLightJournal.decodeTick(rec);
+                        Fluid type = resolveFluidType(level, data, decoded);
+                        if (type == null) {
+                            failures.ticksDroppedMissingTarget.incrementAndGet();
+                            continue;
+                        }
+                        SavedTick<Fluid> tick = new SavedTick<>(type, decoded.pos(), decoded.delay(), decoded.priority());
+                        if (fluidDedup.add(tick)) {
+                            if (newFluids == null) newFluids = new ArrayList<>();
+                            newFluids.add(tick);
+                            failures.ticksReplayed.incrementAndGet();
+                        } else {
+                            failures.ticksDroppedDedup.incrementAndGet();
+                        }
                     }
-                } else if (rec.discriminant() == BakeLightJournal.DISCRIMINANT_FLUID_TICK) {
-                    BakeLightJournal.DecodedTick decoded = BakeLightJournal.decodeTick(rec);
-                    Fluid type = resolveFluidType(level, data, decoded);
-                    if (type == null) {
-                        failures.ticksDroppedMissingTarget.incrementAndGet();
-                        continue;
+                    case BakeLightJournal.DISCRIMINANT_BLOCK_STATE -> {
+                        BlockState state = BakeLightJournal.decodeBlockState(rec);
+                        if (state == null) {
+                            failures.crossRegionWritesMissingTarget.incrementAndGet();
+                            continue;
+                        }
+                        if (applyBlockStateWrite(level, data, rec.blockPos(), state)) {
+                            sectionMutated = true;
+                            failures.crossRegionWritesApplied.incrementAndGet();
+                        } else {
+                            failures.crossRegionWritesMissingTarget.incrementAndGet();
+                        }
                     }
-                    SavedTick<Fluid> tick = new SavedTick<>(type, decoded.pos(), decoded.delay(), decoded.priority());
-                    if (fluidDedup.add(tick)) {
-                        if (newFluids == null) newFluids = new ArrayList<>();
-                        newFluids.add(tick);
-                        failures.ticksReplayed.incrementAndGet();
-                    } else {
-                        failures.ticksDroppedDedup.incrementAndGet();
+                    case BakeLightJournal.DISCRIMINANT_BLOCK_ENTITY_NBT -> {
+                        CompoundTag beTag = BakeLightJournal.decodeBlockEntity(rec);
+                        if (beReplacements == null) beReplacements = new HashMap<>();
+                        BlockPos bePos = BlockEntity.getPosFromTag(pos, beTag);
+                        beReplacements.put(bePos.asLong(), beTag);
+                        failures.crossRegionWritesApplied.incrementAndGet();
+                    }
+                    default -> {
+                        // Unknown discriminant; tolerated by design so future
+                        // writers can be skipped without breaking the parser.
                     }
                 }
-                // Discriminants 1, 2 are reserved for stage 6 (block-state and
-                // block-entity NBT writes). Stage 5 does not emit them; if any
-                // are present here from a forward-compatible writer, skip.
             } catch (Throwable t) {
                 LOGGER.warn("[The Archive] bake-light tail pass: malformed record at {} ({})", pos, t.toString());
             }
         }
 
-        if (newBlocks == null && newFluids == null) {
+        if (newBlocks == null && newFluids == null && !sectionMutated && beReplacements == null) {
             return false;
         }
 
@@ -715,6 +814,10 @@ public final class BakeLightPass {
             mergedFluids.addAll(data.packedTicks().fluids());
             mergedFluids.addAll(newFluids);
         }
+        List<CompoundTag> mergedBlockEntities = data.blockEntities();
+        if (beReplacements != null) {
+            mergedBlockEntities = mergeBlockEntityTags(data.blockEntities(), beReplacements, pos);
+        }
 
         SerializableChunkData updated = new SerializableChunkData(
             data.containerFactory(), data.chunkPos(), data.minSectionY(),
@@ -723,11 +826,56 @@ public final class BakeLightPass {
             data.carvingMask(), data.heightmaps(),
             new ChunkAccess.PackedTicks(mergedBlocks, mergedFluids),
             data.postProcessingSections(), data.lightCorrect(), data.sectionData(),
-            data.entities(), data.blockEntities(), data.structureData(),
+            data.entities(), mergedBlockEntities, data.structureData(),
             data.persistentDataContainer()
         );
         writeChunk(region, pos, updated);
         return true;
+    }
+
+    /**
+     * Write a single packed BlockState into the target chunk's parsed
+     * section data. Returns {@code true} if the write landed in an existing
+     * section, {@code false} if the section is absent on disk (the bake's
+     * 3x3 working set guarantees this should not happen in practice, but a
+     * cross-region target whose region file was concurrently rewritten could
+     * surface a hole; treat as missing rather than throwing).
+     */
+    private static boolean applyBlockStateWrite(
+        ServerLevel level, SerializableChunkData data, BlockPos pos, BlockState state
+    ) {
+        int sectionY = pos.getY() >> 4;
+        int sectionIndex = level.getSectionIndexFromSectionY(sectionY);
+        if (sectionIndex < 0) return false;
+        LevelChunkSection section = null;
+        for (SerializableChunkData.SectionData sd : data.sectionData()) {
+            if (level.getSectionIndexFromSectionY(sd.y()) == sectionIndex) {
+                section = sd.chunkSection();
+                break;
+            }
+        }
+        if (section == null) return false;
+        section.setBlockState(pos.getX() & 15, pos.getY() & 15, pos.getZ() & 15, state, false);
+        return true;
+    }
+
+    /**
+     * Merge a per-position map of BE replacements into the parsed block-entity
+     * list. Entries that match a position in {@code replacements} are
+     * substituted; remaining replacements are appended as new entries.
+     */
+    private static List<CompoundTag> mergeBlockEntityTags(
+        List<CompoundTag> existing, Map<Long, CompoundTag> replacements, ChunkPos chunkPos
+    ) {
+        List<CompoundTag> merged = new ArrayList<>(existing.size() + replacements.size());
+        Map<Long, CompoundTag> remaining = new HashMap<>(replacements);
+        for (CompoundTag tag : existing) {
+            BlockPos pos = BlockEntity.getPosFromTag(chunkPos, tag);
+            CompoundTag replacement = remaining.remove(pos.asLong());
+            merged.add(replacement != null ? replacement : tag);
+        }
+        merged.addAll(remaining.values());
+        return merged;
     }
 
     private static @org.jspecify.annotations.Nullable Block resolveBlockType(
@@ -1227,6 +1375,16 @@ public final class BakeLightPass {
         private @org.jspecify.annotations.Nullable ObjectOpenCustomHashSet<SavedTick<?>> blockTickDedup;
         private @org.jspecify.annotations.Nullable ObjectOpenCustomHashSet<SavedTick<?>> fluidTickDedup;
 
+        // BE index: lazily built on first {@link #blockEntityAt} call so
+        // the bake's CHEST fixer can read both halves of a chest pair (including
+        // cross-region neighbours). Marked dirty when a {@code getBlockEntity}
+        // returns a real BE instance; finalize re-serializes every entry in the
+        // index. Owned-entry flush rebuilds {@code data.blockEntities()};
+        // non-owned-entry flush appends one {@code DISCRIMINANT_BLOCK_ENTITY_NBT}
+        // record per BE to the worker's journal.
+        private @org.jspecify.annotations.Nullable Map<Long, BlockEntity> blockEntityIndex;
+        private boolean blockEntityIndexDirty;
+
         CachedChunk(SerializableChunkData data, boolean owned) {
             this.data = data;
             this.owned = owned;
@@ -1317,6 +1475,96 @@ public final class BakeLightPass {
             );
         }
 
+        /**
+         * Look up the block entity at {@code pos} from the lazily-built index.
+         * Returns {@code null} if no BE exists at the position. Marks the
+         * index dirty on every non-null return so finalize re-serializes the
+         * BE; the bake's only {@link BakeLevelAccessor#getBlockEntity} caller
+         * is the vanilla {@code UpgradeData.CHEST} fixer, which then either
+         * runs {@code ChestBlockEntity.swapContents} (mutates both BEs) or
+         * skips the swap (in which case the no-op re-serialize is harmless).
+         */
+        @org.jspecify.annotations.Nullable BlockEntity blockEntityAt(BakeLevelAccessor accessor, BlockPos pos) {
+            ensureBlockEntityIndex(accessor);
+            BlockEntity be = blockEntityIndex.get(pos.asLong());
+            if (be != null) {
+                blockEntityIndexDirty = true;
+            }
+            return be;
+        }
+
+        private void ensureBlockEntityIndex(BakeLevelAccessor accessor) {
+            if (blockEntityIndex != null) return;
+            Map<Long, BlockEntity> index = new HashMap<>(data.blockEntities().size());
+            ChunkPos chunkPos = data.chunkPos();
+            for (CompoundTag tag : data.blockEntities()) {
+                BlockPos pos = BlockEntity.getPosFromTag(chunkPos, tag);
+                BlockState state = accessor.getBlockState(pos);
+                BlockEntity be = BlockEntity.loadStatic(pos, state, tag, accessor.registryAccess());
+                if (be != null) {
+                    index.put(pos.asLong(), be);
+                }
+            }
+            blockEntityIndex = index;
+        }
+
+        boolean blockEntityIndexDirty() {
+            return blockEntityIndexDirty;
+        }
+
+        /**
+         * Re-serialize every BE in the index and merge into
+         * {@code data.blockEntities()}. Owned-entry path: index entries
+         * overwrite the matching position in the existing list, any BE in the
+         * index not present in the original list is appended.
+         */
+        void flushBlockEntityIndexInto(BakeLevelAccessor accessor) {
+            if (blockEntityIndex == null || !blockEntityIndexDirty) return;
+            Map<Long, CompoundTag> serialized = new HashMap<>(blockEntityIndex.size());
+            for (Map.Entry<Long, BlockEntity> e : blockEntityIndex.entrySet()) {
+                serialized.put(e.getKey(), e.getValue().saveWithFullMetadata(accessor.registryAccess()));
+            }
+            List<CompoundTag> mergedList = mergeBlockEntityTags(data.blockEntities(), serialized, data.chunkPos());
+            data = new SerializableChunkData(
+                data.containerFactory(),
+                data.chunkPos(),
+                data.minSectionY(),
+                data.lastUpdateTime(),
+                data.inhabitedTime(),
+                data.chunkStatus(),
+                data.blendingData(),
+                data.belowZeroRetrogen(),
+                data.upgradeData(),
+                data.carvingMask(),
+                data.heightmaps(),
+                data.packedTicks(),
+                data.postProcessingSections(),
+                data.lightCorrect(),
+                data.sectionData(),
+                data.entities(),
+                mergedList,
+                data.structureData(),
+                data.persistentDataContainer()
+            );
+            blockEntityIndexDirty = false;
+        }
+
+        /**
+         * Non-owned-entry path. Walk each BE in the index, serialize via
+         * {@code saveWithFullMetadata}, append to the worker's journal as a
+         * {@code DISCRIMINANT_BLOCK_ENTITY_NBT} record. The tail pass merges
+         * each record into the target chunk's {@code blockEntities()} list.
+         */
+        void journalBlockEntityIndex(BakeLevelAccessor accessor, BakeLightJournal journal, Identifier dim) throws IOException {
+            if (blockEntityIndex == null || !blockEntityIndexDirty) return;
+            for (Map.Entry<Long, BlockEntity> e : blockEntityIndex.entrySet()) {
+                BlockPos pos = BlockPos.of(e.getKey());
+                CompoundTag tag = e.getValue().saveWithFullMetadata(accessor.registryAccess());
+                journal.appendBlockEntity(dim, pos, tag);
+            }
+            blockEntityIndexDirty = false;
+        }
+
         LevelChunkSection sectionByIndex(final ServerLevel level, final int sectionIndex) {
             ensureSectionArray(level);
             if (sectionIndex < 0 || sectionIndex >= sectionsByIndex.length) return null;
@@ -1376,7 +1624,18 @@ public final class BakeLightPass {
         final AtomicLong regionCount = new AtomicLong();
         final ConcurrentLinkedQueue<String> chunkSample = new ConcurrentLinkedQueue<>();
         final AtomicLong chunkCount = new AtomicLong();
-        final AtomicLong crossRegionWritesDropped = new AtomicLong();
+        // Cross-region write counters. {@code crossRegionWritesJournaled}
+        // is the bake-time count of LEAVES BFS / side-strip / CHEST property /
+        // CHEST swap-content writes that landed outside the worker's owned
+        // region and went through the per-worker journal. {@code missingTarget}
+        // is incremented by the tail pass when a destination region file does
+        // not exist on disk. {@code ioFailed} is bumped at write time when the
+        // append call itself raises IOException; treated as a hard counter so
+        // operators can confirm zero IO loss.
+        final AtomicLong crossRegionWritesJournaled = new AtomicLong();
+        final AtomicLong crossRegionWritesMissingTarget = new AtomicLong();
+        final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
+        final AtomicLong crossRegionWritesApplied = new AtomicLong();
         final AtomicLong chunksBaked = new AtomicLong();
         // Tick-replay counters. Aggregated across all workers and the tail
         // pass; surfaced in the pass-end summary.

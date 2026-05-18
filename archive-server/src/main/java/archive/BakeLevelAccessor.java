@@ -24,6 +24,7 @@ import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
@@ -76,9 +77,14 @@ import org.jspecify.annotations.Nullable;
  * the throw to a partial-bake counter increment and moves on.
  *
  * <p>Cross-region write routing: {@code setBlock}/{@code destroyBlock}
- * targeting a chunk outside the worker's 3x3 working set increments
- * {@link #crossRegionWritesDropped} and returns without mutating. Stage 5
- * lands the journal; stage 3 just drops with a counter.
+ * targeting a non-owned cache entry (border chunk read from a neighbour
+ * region) appends a {@code DISCRIMINANT_BLOCK_STATE} record to the
+ * worker's {@link BakeLightJournal} and bumps {@link #crossRegionWritesJournaled}.
+ * A write targeting a chunk outside the 3x3 working set entirely (no cache
+ * entry) is journaled the same way, since the operator-supplied LEAVES BFS
+ * can spill beyond the immediate border in pathological corner cases; the
+ * tail pass drops it with {@link #crossRegionWritesMissingTarget} if the
+ * destination region file does not exist on disk.
  */
 final class BakeLevelAccessor implements LevelAccessor {
     private final ServerLevel level;
@@ -86,12 +92,22 @@ final class BakeLevelAccessor implements LevelAccessor {
     private final RandomSource random;
     private final NoOpBlockTicks blockTicks = new NoOpBlockTicks();
     private final NoOpFluidTicks fluidTicks = new NoOpFluidTicks();
+    private final BakeLightJournal journal;
+    private final Identifier dim;
 
-    final AtomicLong crossRegionWritesDropped = new AtomicLong();
+    final AtomicLong crossRegionWritesJournaled = new AtomicLong();
+    final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
 
-    BakeLevelAccessor(final ServerLevel level, final Map<Long, BakeLightPass.CachedChunk> cache) {
+    BakeLevelAccessor(
+        final ServerLevel level,
+        final Map<Long, BakeLightPass.CachedChunk> cache,
+        final BakeLightJournal journal,
+        final Identifier dim
+    ) {
         this.level = level;
         this.cache = cache;
+        this.journal = journal;
+        this.dim = dim;
         this.random = new SingleThreadedRandomSource(0L);
     }
 
@@ -131,26 +147,46 @@ final class BakeLevelAccessor implements LevelAccessor {
 
     @Override
     public @Nullable BlockEntity getBlockEntity(final BlockPos pos) {
-        // Bake stage 3 does not materialize BlockEntity objects. CHEST.updateShape
-        // therefore skips the swapContents step (the instanceof checks fail) but
-        // still applies the ChestType property change via setBlock. Item-content
-        // normalization is forfeited; the chunk on first load no longer needs
-        // UpgradeData to drive that swap because the source UpgradeData blob is
-        // already stripped, so the runtime would not re-attempt it either.
-        return null;
+        // BE index lifted off the cache entry so CHEST.swapContents can read
+        // both halves of a chest pair. Owned and non-owned entries contribute
+        // equally; non-owned entries are read so the swap can fire even when
+        // one chest sits across the region boundary. Returning null for
+        // positions outside the 3x3 working set preserves the contract for any
+        // other getBlockEntity call path that may surface.
+        BakeLightPass.CachedChunk entry = entryFor(pos.getX() >> 4, pos.getZ() >> 4);
+        if (entry == null) return null;
+        return entry.blockEntityAt(this, pos);
     }
 
     // ---- LevelWriter ----------------------------------------------------
 
     @Override
     public boolean setBlock(final BlockPos pos, final BlockState state, final int flags, final int recursionLimit) {
-        LevelChunkSection section = sectionAt(pos);
-        if (section == null) {
-            this.crossRegionWritesDropped.incrementAndGet();
-            return false;
+        BakeLightPass.CachedChunk entry = entryFor(pos.getX() >> 4, pos.getZ() >> 4);
+        if (entry != null && entry.owned) {
+            LevelChunkSection section = entry.sectionAt(this.level, pos.getY());
+            if (section == null) return false;
+            section.setBlockState(pos.getX() & 15, pos.getY() & 15, pos.getZ() & 15, state, false);
+            entry.dirty = true;
+            // BE index is intentionally NOT invalidated here. Vanilla's
+            // {@code UpgradeData.CHEST.updateShape} flips ChestType then calls
+            // {@code Block.updateOrDestroy} which routes back through us; the
+            // resulting setBlock on the source-chest position must not drop the
+            // in-index ChestBlockEntity that holds the post-swap contents. The
+            // bake walk does not change block class for any position that
+            // carries a BE, so the in-index BE remains a valid representation
+            // of the (now mutated) entity state.
+            return true;
         }
-        section.setBlockState(pos.getX() & 15, pos.getY() & 15, pos.getZ() & 15, state, false);
-        markDirtyIfOwned(pos);
+        // Non-owned cache entry, or outside the 3x3 working set entirely.
+        // Journal the write; the tail pass replays it after every worker has
+        // released its region buffers.
+        try {
+            this.journal.appendBlockState(this.dim, pos, state);
+            this.crossRegionWritesJournaled.incrementAndGet();
+        } catch (java.io.IOException ex) {
+            this.crossRegionWritesIoFailed.incrementAndGet();
+        }
         return true;
     }
 
@@ -164,13 +200,6 @@ final class BakeLevelAccessor implements LevelAccessor {
         // Block.updateOrDestroy routes air-result through this. We just clear to
         // air; no item drops (we're not a runtime world).
         return setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS, updateLimit);
-    }
-
-    private void markDirtyIfOwned(final BlockPos pos) {
-        BakeLightPass.CachedChunk entry = entryFor(pos.getX() >> 4, pos.getZ() >> 4);
-        if (entry != null && entry.owned) {
-            entry.dirty = true;
-        }
     }
 
     // ---- LevelHeightAccessor (via LevelReader defaults) -----------------
