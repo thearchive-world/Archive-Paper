@@ -11,7 +11,7 @@ Archive-Paper runs archived worlds as a read-only server: saving is disabled by 
 
 Archive-Paper does not auto-upgrade pre-26.1 source worlds on first startup. To upgrade in place, pass `--upgradeChunks` (recommended) or `--forceUpgrade`. Alternatively, run vanilla Paper once on the world, then switch to Archive-Paper.
 
-`--upgradeChunks` is the recommended path for upgrading archive worlds. Parallel post-spin conversion pass with saving enabled; resumable via `.archive-upgrade-progress.txt`; per-chunk failure tolerant. Logs `Starting chunk upgrade pass` when it begins. The server halts after the pass.
+`--upgradeChunks` is the recommended path for upgrading archive worlds. Parallel post-spin conversion pass with saving enabled; resumable via `.archive-upgrade-progress.txt`; per-chunk failure tolerant. After the per-dimension chunk loop, a single-threaded tail pass DFUs `data/minecraft/maps/*.dat` and `last_id.dat` (overworld only); progress and failures share the same end-of-run summary. Logs `Starting chunk upgrade pass` when it begins. The server halts after the pass.
 
 `--forceUpgrade` runs Mojang's `WorldUpgrader` pre-spin. The scaffolding (`WorldUpgrader`, `RegionStorageUpgrader`) is Mojang's; per-chunk conversion goes through Paper's data converter rewrite (`MCDataConverter`) at the leaf, same engine as `--upgradeChunks`. Paper gutted the flag in 26.1; restored here. Single-threaded; not resumable.
 
@@ -23,7 +23,7 @@ Archive-Paper does not auto-upgrade pre-26.1 source worlds on first startup. To 
 
 `--bakeLight` is the post-clean light/heightmap/UpgradeData baker. Bakes `isLightOn`, finalized heightmaps, and resolved `UpgradeData` (Indices, Sides, neighbour-tick lists) into each chunk on disk so the runtime save-gated load no longer pays `UpgradeData.upgrade()`, Starlight, or `Heightmap.primeHeightmaps` per-visit on legacy chunks. Run AFTER `--cleanDirtyChunks`, BEFORE `--auditDirtyChunks`. Halts after the pass.
 
-`--auditDirtyChunks` is the read-only audit pass. Walks each dimension's `region/*.mca`, decodes block entities and section block states, counts dirt classes (`invalid-attrs`, `ghost-bes`, `be-coord-mismatch`, `be-type-mismatch`, `uuid-dups`, `bake-partial`, `bake-pending`, `bake-ineligible`). Prints per-dim and total counts; does not modify world files. Use to verify the pipeline ran clean (counts should be zero, or within published bake-partial spec).
+`--auditDirtyChunks` is the read-only audit pass. Walks each dimension's `region/*.mca`, decodes block entities and section block states, counts dirt classes (`invalid-attrs`, `ghost-bes`, `be-coord-mismatch`, `be-type-mismatch`, `uuid-dups`, `bake-partial`, `bake-pending`, `bake-ineligible`). Single-threaded; logs progress every 30s as `X / Y regions (Z chunks, W ch/s)`. Prints per-dim and total counts; does not modify world files. Use to verify the pipeline ran clean (counts should be zero, or within published bake-partial spec).
 
 The operator pipeline is `--upgradeChunks` then `--cleanDirtyChunks` then `--bakeLight` then `--auditDirtyChunks`, each as a separate invocation. None of the flags chain.
 
