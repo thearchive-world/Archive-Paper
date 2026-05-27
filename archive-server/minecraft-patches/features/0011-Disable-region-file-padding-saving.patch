@@ -5,10 +5,10 @@ Subject: [PATCH] Disable region file padding saving
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/RegionFile.java b/net/minecraft/world/level/chunk/storage/RegionFile.java
-index e077797cefffcb9db627cab12c7d88245e5baa69..b7920837dd5663bed3b0999a359e25d5c835d320 100644
+index 42d07aef0b2f646ec52ed6f4e7c003dbf82bd92d..d3aad742161c68894baa7114845d91571a605151 100644
 --- a/net/minecraft/world/level/chunk/storage/RegionFile.java
 +++ b/net/minecraft/world/level/chunk/storage/RegionFile.java
-@@ -882,6 +882,8 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
+@@ -881,6 +881,8 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
      }
  
      private void padToFullSector() throws IOException {

@@ -5,7 +5,7 @@ Subject: [PATCH] Restore forceUpgrade
 
 
 diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
-index aa15c5c83f04e518c30a9dee7945062099197c25..dfb32ed19afb0f5352892ce0daed554128a0aff7 100644
+index 38b50aaf6473c7692d3372ad7b956355be989bd4..14e5e9859238c7bd6410bc1789fbad87904fce61 100644
 --- a/net/minecraft/server/Main.java
 +++ b/net/minecraft/server/Main.java
 @@ -66,6 +66,7 @@ public class Main {
@@ -29,7 +29,7 @@ index aa15c5c83f04e518c30a9dee7945062099197c25..dfb32ed19afb0f5352892ce0daed5541
              RegionFileVersion.configure(settings.getProperties().regionFileComression);
              Path eulaFile = Paths.get("eula.txt");
              Eula eula = new Eula(eulaFile);
-@@ -288,16 +283,15 @@ public class Main {
+@@ -287,16 +282,15 @@ public class Main {
                  return;
              }
  
@@ -50,7 +50,7 @@ index aa15c5c83f04e518c30a9dee7945062099197c25..dfb32ed19afb0f5352892ce0daed5541
              final DedicatedServer dedicatedServer = MinecraftServer.spin(
                  thread -> {
                      DedicatedServer server = new DedicatedServer(
-@@ -427,10 +421,6 @@ public class Main {
+@@ -426,10 +420,6 @@ public class Main {
          final RegistryAccess registryAccess,
          final boolean recreateRegionFiles
      ) {
@@ -61,7 +61,7 @@ index aa15c5c83f04e518c30a9dee7945062099197c25..dfb32ed19afb0f5352892ce0daed5541
          LOGGER.info("Forcing world upgrade! {}", storageSource.getLevelId()); // CraftBukkit
  
          try (WorldUpgrader upgrader = new WorldUpgrader(storageSource, fixerUpper, registryAccess, eraseCache, recreateRegionFiles)) {
-@@ -459,6 +449,5 @@ public class Main {
+@@ -458,6 +448,5 @@ public class Main {
                  }
              }
          }

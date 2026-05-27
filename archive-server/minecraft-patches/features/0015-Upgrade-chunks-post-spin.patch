@@ -14,10 +14,10 @@ no chunk-system involvement. See docs/upgrade-pipeline-design.md for
 rationale.
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 440e5d2c199c6e8cbab2d5c92256cccfd0c555fe..4a170bb6c72f777f3a834b26a73040db93780a38 100644
+index cc35c6271c98615a486422d0490145227626bd85..0728cd0c562c2dedaebe86678c6c33b18c42404d 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1336,6 +1336,36 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1326,6 +1326,36 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                  CompletableFuture.runAsync(com.destroystokyo.paper.PaperVersionFetcher::getUpdateStatusStartupMessage, io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR);
              }
              // Paper end - Improve outdated version checking

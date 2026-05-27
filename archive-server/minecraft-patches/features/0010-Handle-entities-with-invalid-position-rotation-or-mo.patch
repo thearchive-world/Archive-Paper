@@ -5,10 +5,10 @@ Subject: [PATCH] Handle entities with invalid position, rotation, or motion
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 82f6582a92f17bdeb3218c4c1fcac86981fd9c37..2a683852a8bf586c5c8e9ece26707c033ebee709 100644
+index 74a2b3dcd303b25e9c26f3e4d4220b390b32f1d5..656af4364461e566f38455e2bdc4806fde4c3d1d 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -2689,8 +2689,12 @@ public abstract class Entity
+@@ -2690,8 +2690,12 @@ public abstract class Entity
      public void load(final ValueInput input) {
          try {
              Vec3 pos = input.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);

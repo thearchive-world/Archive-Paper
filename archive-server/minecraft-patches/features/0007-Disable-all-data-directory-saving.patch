@@ -5,10 +5,10 @@ Subject: [PATCH] Disable all data directory saving
 
 
 diff --git a/net/minecraft/world/level/storage/SavedDataStorage.java b/net/minecraft/world/level/storage/SavedDataStorage.java
-index 971c3f3311f5eb132817589ee5b7f65736c25b76..1f37f82be858e4b91e9c940d2fe9a88f98521c6a 100644
+index f359e53024019f35aaa5cd8477da708bda2fc57a..3f82661f18b5543be2fcc013e7356f397a7f590a 100644
 --- a/net/minecraft/world/level/storage/SavedDataStorage.java
 +++ b/net/minecraft/world/level/storage/SavedDataStorage.java
-@@ -147,6 +147,8 @@ public class SavedDataStorage implements AutoCloseable {
+@@ -144,6 +144,8 @@ public class SavedDataStorage implements AutoCloseable {
      }
  
      public CompletableFuture<?> scheduleSave() {
@@ -16,4 +16,4 @@ index 971c3f3311f5eb132817589ee5b7f65736c25b76..1f37f82be858e4b91e9c940d2fe9a88f
 +        if (archive.ArchiveSettings.disableSaving()) return CompletableFuture.completedFuture(null);
          if (this.closed) {
              throw new IllegalStateException("Trying to schedule save when SavedDataStorage is already closed");
-         } else {
+         }

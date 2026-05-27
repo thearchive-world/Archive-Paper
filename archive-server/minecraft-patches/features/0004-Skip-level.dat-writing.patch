@@ -5,10 +5,10 @@ Subject: [PATCH] Skip level.dat writing
 
 
 diff --git a/net/minecraft/world/level/storage/LevelStorageSource.java b/net/minecraft/world/level/storage/LevelStorageSource.java
-index ea43d9b47cc9f2e201fd43e56d8dc896e4b1cabd..ed54356ffc820ff7b6046f5f1ea7fc98f04b7214 100644
+index 8db7167fab968c9e99211ce95e5d503f9d2eb5f0..ab069be9fa50002db7c67f4ce0f881c7f1147087 100644
 --- a/net/minecraft/world/level/storage/LevelStorageSource.java
 +++ b/net/minecraft/world/level/storage/LevelStorageSource.java
-@@ -589,6 +589,8 @@ public class LevelStorageSource {
+@@ -576,6 +576,8 @@ public class LevelStorageSource {
          }
  
          public void saveDataTag(final WorldData levelData, final @Nullable UUID singleplayerUUID) {
@@ -17,7 +17,7 @@ index ea43d9b47cc9f2e201fd43e56d8dc896e4b1cabd..ed54356ffc820ff7b6046f5f1ea7fc98
              CompoundTag dataTag = levelData.createTag(singleplayerUUID);
              CompoundTag root = new CompoundTag();
              root.put("Data", dataTag);
-@@ -603,6 +605,8 @@ public class LevelStorageSource {
+@@ -590,6 +592,8 @@ public class LevelStorageSource {
          }
  
          private void saveLevelData(final CompoundTag root) {
