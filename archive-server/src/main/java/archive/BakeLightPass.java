@@ -147,9 +147,10 @@ public final class BakeLightPass {
         runJournalReplayTailPass(server, worldRoot, failures);
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
-        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), totalChunks, elapsedSec);
+        long tailMalformed = failures.tailPassMalformedRecords.get();
+        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0) {
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} tail-pass malformed records, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), tailMalformed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -171,7 +172,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}) in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}), tail-pass malformed={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -181,6 +182,7 @@ public final class BakeLightPass {
                 failures.crossRegionWritesApplied.get(),
                 failures.crossRegionWritesMissingTarget.get(),
                 failures.crossRegionWritesIoFailed.get(),
+                tailMalformed,
                 elapsedSec);
         }
     }
@@ -795,6 +797,7 @@ public final class BakeLightPass {
                 }
             } catch (Throwable t) {
                 LOGGER.warn("[The Archive] bake-light tail pass: malformed record at {} ({})", pos, t.toString());
+                failures.tailPassMalformedRecords.incrementAndGet();
             }
         }
 
@@ -1643,6 +1646,12 @@ public final class BakeLightPass {
         final AtomicLong ticksDroppedDistanceFilter = new AtomicLong();
         final AtomicLong ticksDroppedMissingTarget = new AtomicLong();
         final AtomicLong ticksDroppedDedup = new AtomicLong();
+        // Tail-pass malformed-record counter. Bumped from the per-record catch
+        // in replayRecordsAtTarget when decodeTick/decodeBlockState/decodeBlockEntity
+        // throws on a corrupt journal payload. Without a dedicated counter, the
+        // pass-end summary would under-report drops and operators could not
+        // distinguish zero-loss from N-loss after a SIGKILL+resume.
+        final AtomicLong tailPassMalformedRecords = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
