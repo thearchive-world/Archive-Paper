@@ -382,21 +382,26 @@ public final class BakeLightPass {
             failures.chunksBaked.addAndGet(baked);
 
             // Region finalize. Order matters for SIGKILL safety:
-            //   1. Flush pending tick appends into each owned dirty entry,
+            //   1. Journal non-owned dirty BE indices. Vanilla's CHEST.swapContents
+            //      mutates BEs on both sides of a cross-region chest pair; the
+            //      journal captures the non-owned half (the owned half lands in
+            //      step 3's blockEntities() rebuild). Counted as journaled writes
+            //      so the totals add up against the tail-pass counter family.
+            //   2. fsync the worker's journal so cross-region writes are durable
+            //      BEFORE any owned chunk's UpgradeData-stripped form is written
+            //      to the source region. If fsync throws, the catch re-throws out of
+            //      processRegion: the writeback loop never runs, try-with-resources
+            //      closes the region, and file.force(true) flushes a region whose
+            //      contents are unchanged from when the worker opened it. The
+            //      source chunks retain their UpgradeData on disk, so a re-run
+            //      walks them again and re-emits the cross-region writes.
+            //   3. Flush pending ticks + BE indices into each owned dirty entry,
             //      then write the chunk via the still-open RegionFile.
-            //   2. fsync the worker's journal so cross-region writes are
-            //      durable before the source's UpgradeData strip becomes
-            //      durable on disk.
-            //   3. Region close happens at try-with-resources scope exit,
-            //      which calls file.force(true).
-            //   4. Caller (the pool.submit lambda) appends the region key
-            //      to the progress file after this method returns.
-            // Step 1a: journal non-owned dirty BE indices BEFORE owned write-backs
-            // happen. Vanilla's CHEST.swapContents mutates BEs on both sides of
-            // a cross-region chest pair; the journal captures the non-owned
-            // half (the owned half lands in step 1b's blockEntities() rebuild).
-            // Counted as journaled writes so the totals add up against the
-            // tail-pass counter family.
+            //   4. Region close happens at try-with-resources scope exit, which
+            //      calls file.force(true). This is the source-chunk durability
+            //      barrier; the journal is already fsynced.
+            //   5. Caller (the pool.submit lambda) appends the region key to the
+            //      progress file after this method returns successfully.
             for (CachedChunk entry : cache.values()) {
                 if (entry.owned) continue;
                 if (!entry.blockEntityIndexDirty()) continue;
@@ -410,6 +415,20 @@ public final class BakeLightPass {
                                  regionLabel, entry.data.chunkPos().x(), entry.data.chunkPos().z(), ex.getMessage());
                     accessor.crossRegionWritesIoFailed.incrementAndGet();
                 }
+            }
+
+            // Propagate accessor's cross-region counters into Failures BEFORE
+            // the fsync so the metrics survive an fsync throw.
+            failures.crossRegionWritesJournaled.addAndGet(accessor.crossRegionWritesJournaled.get());
+            failures.crossRegionWritesIoFailed.addAndGet(accessor.crossRegionWritesIoFailed.get());
+
+            try {
+                journal.fsync();
+            } catch (IOException ex) {
+                LOGGER.error("[The Archive] bake-light journal fsync failed for region {} ({}); owned chunk writebacks skipped, source on-disk state preserved for retry",
+                             regionLabel, ex.getMessage());
+                failures.recordRegion(dim + " bakelight " + rx + " " + rz);
+                throw ex;
             }
 
             for (CachedChunk entry : cache.values()) {
@@ -433,18 +452,6 @@ public final class BakeLightPass {
                     perChunkFailures++;
                 }
             }
-
-            try {
-                journal.fsync();
-            } catch (IOException ex) {
-                LOGGER.error("[The Archive] bake-light journal fsync failed for region {} ({}); the region will not be closed",
-                             regionLabel, ex.getMessage());
-                failures.recordRegion(dim + " bakelight " + rx + " " + rz);
-                throw ex;
-            }
-
-            failures.crossRegionWritesJournaled.addAndGet(accessor.crossRegionWritesJournaled.get());
-            failures.crossRegionWritesIoFailed.addAndGet(accessor.crossRegionWritesIoFailed.get());
         }
         return new RegionResult(parsed, perChunkFailures, borderLoadFailures);
     }
