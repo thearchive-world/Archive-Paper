@@ -552,7 +552,11 @@ public final class AuditDirtyChunks {
     private static boolean upgradeDataIsDrained(CompoundTag root) {
         CompoundTag ud = root.getCompoundOrEmpty("UpgradeData");
         if (ud.isEmpty()) return true;
-        if (!ud.getListOrEmpty("Indices").isEmpty()) return false;
+        // Vanilla UpgradeData.write serializes Indices as a CompoundTag keyed
+        // by stringified section index, not a ListTag. Reading it as a list
+        // would always match empty on type mismatch and silently classify
+        // every Indices-bearing chunk as bake-complete.
+        if (!ud.getCompoundOrEmpty("Indices").isEmpty()) return false;
         // Sides is a single byte bitmask; non-zero means at least one side
         // still owes a wall update. Absence reads as 0 via getByteOr default.
         if (ud.getByteOr("Sides", (byte) 0) != 0) return false;
