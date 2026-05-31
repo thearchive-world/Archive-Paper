@@ -17,6 +17,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -99,6 +100,15 @@ final class BakeLightJournal implements AutoCloseable {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final String FILE_PREFIX = ".archive-bakelight-journal-";
     private static final String FILE_SUFFIX = ".bin";
+    // Upper bound on a single record's payload bytes. Largest legitimate
+    // payload is a BlockEntity NBT image which is chunk-bounded; 16 MB
+    // is several multiples above that and below any threshold where the
+    // 8-worker live bake could push the JVM toward GC pressure. The cap
+    // exists to make a torn payload-length header (a SIGKILL between the
+    // 4-byte writeInt and the subsequent payload write leaves arbitrary
+    // bytes there) recoverable instead of an OOM or a multi-gigabyte
+    // readNBytes that corrupts every subsequent record.
+    private static final int MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
     private final Path path;
     private FileOutputStream rawOut;
@@ -249,9 +259,20 @@ final class BakeLightJournal implements AutoCloseable {
     @Override
     public void close() throws IOException {
         if (out == null) return;
-        out.close();
-        out = null;
-        rawOut = null;
+        // DataOutputStream.close() normally cascades to rawOut, but a flush
+        // failure inside BufferedOutputStream.close() can leave rawOut open.
+        // Close rawOut explicitly in the finally so the FD is released on
+        // the disk-failure paths the journal is meant to survive.
+        try {
+            out.close();
+        } finally {
+            try {
+                if (rawOut != null) rawOut.close();
+            } finally {
+                out = null;
+                rawOut = null;
+            }
+        }
     }
 
     long recordsWritten() {
@@ -271,6 +292,13 @@ final class BakeLightJournal implements AutoCloseable {
     static final class JournalRegistry {
         private final Path worldRoot;
         private final ConcurrentHashMap<String, BakeLightJournal> journals = new ConcurrentHashMap<>();
+        // Bumped from closeAll()'s catch when an individual journal's
+        // close() throws. The on-disk file is durable at that point
+        // (region-finalize fsync barrier already ran), the tail pass
+        // picks it up via discoverFiles, and the warn-per-line is the
+        // primary signal; this counter exists so post-run grep can
+        // confirm how many close errors fired without reparsing logs.
+        private final AtomicLong closeAllErrors = new AtomicLong();
 
         JournalRegistry(final Path worldRoot) {
             this.worldRoot = worldRoot;
@@ -282,26 +310,33 @@ final class BakeLightJournal implements AutoCloseable {
                 worldRoot.resolve(FILE_PREFIX + id + FILE_SUFFIX)));
         }
 
-        List<BakeLightJournal> all() {
-            return new ArrayList<>(journals.values());
-        }
-
         long totalRecords() {
             long total = 0;
             for (BakeLightJournal j : journals.values()) total += j.recordsWritten;
             return total;
         }
 
-        /** Close every open journal. Errors logged and swallowed; the file
-         * stays on disk and the tail pass picks it up by directory scan. */
+        /**
+         * Close every open journal. Errors are logged and swallowed by
+         * design: the file stays on disk, and the next run's tail pass
+         * {@link #discoverFiles} walks the world root and replays any
+         * records that survived the region-finalize fsync barrier. Each
+         * swallowed exception also bumps {@link #closeAllErrors} so the
+         * count is recoverable post-run without reparsing log lines.
+         */
         void closeAll() {
             for (BakeLightJournal j : journals.values()) {
                 try {
                     j.close();
                 } catch (IOException ex) {
+                    closeAllErrors.incrementAndGet();
                     LOGGER.warn("[The Archive] bake-light journal close failed: {}", ex.getMessage());
                 }
             }
+        }
+
+        long closeAllErrors() {
+            return closeAllErrors.get();
         }
 
         /**
@@ -339,8 +374,18 @@ final class BakeLightJournal implements AutoCloseable {
      * in memory; the volume is bounded by perimeter geometry (single-digit MB
      * per worker), so a full in-memory read is fine.
      * Unknown discriminants are skipped via the explicit payload-length field.
+     *
+     * <p>Torn records survive on-disk after a SIGKILL between fsync barriers,
+     * so the reader is hardened against two failure shapes that real
+     * resume-from-crash sees: a malformed dim id (non-{@code namespace:path}
+     * or invalid UTF-8) skips the one record and continues with the next
+     * via {@link Identifier#tryParse}; a payload-length outside
+     * {@code [0, MAX_PAYLOAD_BYTES]} stops parsing at the bad record (any
+     * later records on disk are lost on this file but the journal as a
+     * whole still gives up the prefix that read cleanly). Both paths bump
+     * {@code malformedCounter} so operator visibility is non-silent.
      */
-    static List<Record> read(final Path file) throws IOException {
+    static List<Record> read(final Path file, final AtomicLong malformedCounter) throws IOException {
         List<Record> records = new ArrayList<>();
         try (DataInputStream in = new DataInputStream(new FileInputStream(file.toFile()))) {
             while (true) {
@@ -355,7 +400,7 @@ final class BakeLightJournal implements AutoCloseable {
                     LOGGER.warn("[The Archive] bake-light journal {} truncated at dim id", file);
                     return records;
                 }
-                Identifier dim = Identifier.parse(new String(dimBytes, StandardCharsets.UTF_8));
+                Identifier dim = Identifier.tryParse(new String(dimBytes, StandardCharsets.UTF_8));
                 int targetChunkX = in.readInt();
                 int targetChunkZ = in.readInt();
                 int bx = in.readInt();
@@ -363,10 +408,22 @@ final class BakeLightJournal implements AutoCloseable {
                 int bz = in.readInt();
                 byte discriminant = in.readByte();
                 int payloadLength = in.readInt();
+                if (payloadLength < 0 || payloadLength > MAX_PAYLOAD_BYTES) {
+                    LOGGER.warn("[The Archive] bake-light journal {} malformed payload-length {} at record offset, abandoning rest of file",
+                                file, payloadLength);
+                    malformedCounter.incrementAndGet();
+                    return records;
+                }
                 byte[] payload = in.readNBytes(payloadLength);
                 if (payload.length != payloadLength) {
                     LOGGER.warn("[The Archive] bake-light journal {} truncated payload at offset", file);
                     return records;
+                }
+                if (dim == null) {
+                    LOGGER.warn("[The Archive] bake-light journal {} malformed dim id ({} bytes), skipping record",
+                                file, dimLen);
+                    malformedCounter.incrementAndGet();
+                    continue;
                 }
                 records.add(new Record(dim, targetChunkX, targetChunkZ, new BlockPos(bx, by, bz), discriminant, payload));
             }

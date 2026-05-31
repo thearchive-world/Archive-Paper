@@ -152,8 +152,8 @@ public final class BakeLightPass {
         long progressFailed = failures.progressAppendFailed.get();
         long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), tailMalformed, progressFailed, totalChunks, elapsedSec);
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, progressFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -186,7 +186,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}), tail-pass malformed={}, border-load failures={}, progress-marker IO failures={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, border-load failures={}, progress-marker IO failures={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -197,6 +197,7 @@ public final class BakeLightPass {
                 failures.crossRegionWritesMissingTarget.get(),
                 failures.crossRegionWritesIoFailed.get(),
                 failures.crossRegionWritesPartialDecode.get(),
+                failures.journalReadMalformed.get(),
                 tailMalformed,
                 borderLoadFail,
                 progressFailed,
@@ -634,7 +635,7 @@ public final class BakeLightPass {
         for (Path journal : journalFiles) {
             List<BakeLightJournal.Record> records;
             try {
-                records = BakeLightJournal.read(journal);
+                records = BakeLightJournal.read(journal, failures.journalReadMalformed);
             } catch (IOException ex) {
                 LOGGER.error("[The Archive] bake-light failed to read journal {}: {}", journal, ex.getMessage());
                 continue;
@@ -1765,6 +1766,15 @@ public final class BakeLightPass {
         // gate the pass. Non-zero values are visible in the pass-end summary
         // but do not trigger the FAILED branch on their own.
         final AtomicLong crossRegionWritesPartialDecode = new AtomicLong();
+        // Tail-pass reader-hardening counter. Bumped from BakeLightJournal.read
+        // when a single record fails to parse (malformed dim id via
+        // Identifier.tryParse, or an out-of-range payload-length header).
+        // Malformed-dim continues past the record; out-of-range payload-length
+        // abandons the rest of that one file. Non-zero values are visible in
+        // the pass-end summary but do not trigger the FAILED branch on their
+        // own; the records were unrecoverable already, the counter just
+        // surfaces how many records the reader dropped on the floor.
+        final AtomicLong journalReadMalformed = new AtomicLong();
         final AtomicLong chunksBaked = new AtomicLong();
         // Tick-replay counters. Aggregated across all workers and the tail
         // pass; surfaced in the pass-end summary.
