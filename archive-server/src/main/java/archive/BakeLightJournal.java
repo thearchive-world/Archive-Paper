@@ -13,14 +13,18 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.ticks.SavedTick;
 import net.minecraft.world.ticks.TickPriority;
 import org.slf4j.Logger;
@@ -32,12 +36,13 @@ import org.slf4j.Logger;
  * during the bake walk; the journal-replay tail pass drains every worker's
  * journal after all regions are done, then deletes the files.
  *
- * <p>Emits four discriminants: 1 (packed BlockState id, written
- * by LEAVES BFS, side-strip, and CHEST property changes that land outside
- * the worker's owned region), 2 (BlockEntity NBT, written by CHEST
- * {@code swapContents} on cross-region pairs), 3 (block tick), and 4
- * (fluid tick). The record format includes an explicit payload length so
- * unknown discriminants can be skipped without breaking the parse loop.
+ * <p>Emits four discriminants: 1 (BlockState as block resource location
+ * plus property name/value pairs, written by LEAVES BFS, side-strip, and
+ * CHEST property changes that land outside the worker's owned region),
+ * 2 (BlockEntity NBT, written by CHEST {@code swapContents} on cross-region
+ * pairs), 3 (block tick), and 4 (fluid tick). The record format includes an
+ * explicit payload length so unknown discriminants can be skipped without
+ * breaking the parse loop.
  *
  * <h2>Record layout</h2>
  * <pre>
@@ -55,10 +60,17 @@ import org.slf4j.Logger;
  *
  * <h3>Payload by discriminant</h3>
  * <ul>
- *   <li>{@link #DISCRIMINANT_BLOCK_STATE}: int packed block-state id, encoded
- *       via {@link Block#BLOCK_STATE_REGISTRY} {@code .getId}. Per-run only;
- *       valid as long as the BlockState registry layout does not shuffle
- *       between writer and reader, which holds inside a single bake run.</li>
+ *   <li>{@link #DISCRIMINANT_BLOCK_STATE}: short block resource location length,
+ *       UTF-8 block resource location, short property count, then for each
+ *       property short name length, UTF-8 name, short value length, UTF-8 value
+ *       (per the property's own {@link Property#getName(Comparable)}
+ *       serialization). Durable across JVM runs because no transient registry
+ *       ids cross the boundary; properties absent on the reader's block
+ *       definition or whose value string no longer parses are skipped and
+ *       counted via the {@code crossRegionWritesPartialDecode} counter, which
+ *       surfaces silent drift without aborting the bake. A block class that no
+ *       longer exists in the registry routes through the existing
+ *       {@code crossRegionWritesMissingTarget} path.</li>
  *   <li>{@link #DISCRIMINANT_BLOCK_ENTITY_NBT}: raw NBT bytes from
  *       {@link NbtIo#write}; the embedded x/y/z fields carry the target
  *       block position so the tail pass can index by it without consulting
@@ -112,17 +124,44 @@ final class BakeLightJournal implements AutoCloseable {
 
     /**
      * Append a single block-state write targeted at a cross-region block
-     * position. The encoded payload is one int: the packed BlockState id from
-     * {@link Block#BLOCK_STATE_REGISTRY}. The tail pass decodes via
-     * {@code BLOCK_STATE_REGISTRY.byId} on the same JVM run.
+     * position. The payload is self-describing: the block's resource location
+     * plus every property's name and string-serialized value. The tail pass
+     * looks the block up in {@link BuiltInRegistries#BLOCK} and reapplies
+     * each property, skipping any whose name no longer exists on the block
+     * definition or whose value string fails to round-trip (each skip bumps
+     * the {@code crossRegionWritesPartialDecode} counter so drift is
+     * observable). Durable across JVM runs because no transient registry
+     * ids cross the boundary.
      */
     void appendBlockState(final Identifier dim, final BlockPos pos, final BlockState state) throws IOException {
         appendHeader(dim, pos);
-        int packed = Block.BLOCK_STATE_REGISTRY.getId(state);
+        ByteArrayOutputStream buf = new ByteArrayOutputStream(128);
+        try (DataOutputStream dos = new DataOutputStream(buf)) {
+            byte[] blockRlBytes = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString().getBytes(StandardCharsets.UTF_8);
+            dos.writeShort(blockRlBytes.length);
+            dos.write(blockRlBytes);
+            Collection<Property<?>> properties = state.getProperties();
+            dos.writeShort(properties.size());
+            for (Property<?> property : properties) {
+                byte[] nameBytes = property.getName().getBytes(StandardCharsets.UTF_8);
+                dos.writeShort(nameBytes.length);
+                dos.write(nameBytes);
+                byte[] valueBytes = serializePropertyValue(state, property).getBytes(StandardCharsets.UTF_8);
+                dos.writeShort(valueBytes.length);
+                dos.write(valueBytes);
+            }
+        }
+        byte[] payload = buf.toByteArray();
         out.writeByte(DISCRIMINANT_BLOCK_STATE);
-        out.writeInt(4);
-        out.writeInt(packed);
+        out.writeInt(payload.length);
+        out.write(payload);
         recordsWritten++;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static String serializePropertyValue(final BlockState state, final Property<?> property) {
+        Comparable value = state.getValue((Property) property);
+        return ((Property) property).getName(value);
     }
 
     /**
@@ -334,20 +373,64 @@ final class BakeLightJournal implements AutoCloseable {
         }
     }
 
-    /** Decode a packed-block-state payload back into a {@link BlockState}. */
-    static @org.jspecify.annotations.Nullable BlockState decodeBlockState(final Record record) {
+    /**
+     * Decode a block-state payload. Returns a {@link BlockStateDecodeResult}
+     * carrying both the reconstructed state and a per-record skipped-property
+     * count. {@code state == null} when the block resource location is absent
+     * from {@link BuiltInRegistries#BLOCK} (caller routes through the existing
+     * {@code crossRegionWritesMissingTarget} path); otherwise {@code state}
+     * starts from the block's default state with every property that resolved
+     * applied on top. Properties whose name no longer exists on the block
+     * definition or whose value string fails to round-trip via
+     * {@link Property#getValue(String)} are skipped and counted in
+     * {@code propertiesSkipped} so silent drift is observable rather than
+     * silently dropped.
+     */
+    static BlockStateDecodeResult decodeBlockState(final Record record) {
         if (record.discriminant != DISCRIMINANT_BLOCK_STATE) {
             throw new IllegalArgumentException("Not a block-state discriminant: " + record.discriminant);
         }
-        if (record.payload.length != 4) {
-            throw new IllegalStateException("Block-state payload must be 4 bytes, got " + record.payload.length);
-        }
         try (DataInputStream in = new DataInputStream(new java.io.ByteArrayInputStream(record.payload))) {
-            int packed = in.readInt();
-            return Block.BLOCK_STATE_REGISTRY.byId(packed);
+            int blockRlLen = in.readUnsignedShort();
+            String blockRl = new String(in.readNBytes(blockRlLen), StandardCharsets.UTF_8);
+            int propertyCount = in.readUnsignedShort();
+            Optional<Block> optBlock = BuiltInRegistries.BLOCK.getOptional(Identifier.parse(blockRl));
+            if (optBlock.isEmpty()) {
+                return new BlockStateDecodeResult(null, 0);
+            }
+            Block block = optBlock.get();
+            BlockState state = block.defaultBlockState();
+            int skipped = 0;
+            for (int i = 0; i < propertyCount; i++) {
+                int nameLen = in.readUnsignedShort();
+                String name = new String(in.readNBytes(nameLen), StandardCharsets.UTF_8);
+                int valueLen = in.readUnsignedShort();
+                String value = new String(in.readNBytes(valueLen), StandardCharsets.UTF_8);
+                Property<?> property = block.getStateDefinition().getProperty(name);
+                if (property == null) {
+                    skipped++;
+                    continue;
+                }
+                BlockState next = applyParsedProperty(state, property, value);
+                if (next == null) {
+                    skipped++;
+                    continue;
+                }
+                state = next;
+            }
+            return new BlockStateDecodeResult(state, skipped);
         } catch (IOException ex) {
             throw new IllegalStateException("malformed block-state payload", ex);
         }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static @org.jspecify.annotations.Nullable BlockState applyParsedProperty(
+        final BlockState state, final Property<?> property, final String value
+    ) {
+        Optional<? extends Comparable<?>> parsed = property.getValue(value);
+        if (parsed.isEmpty()) return null;
+        return state.setValue((Property) property, (Comparable) parsed.get());
     }
 
     /** Decode a BlockEntity NBT payload via {@link NbtIo#read}. */
@@ -384,4 +467,14 @@ final class BakeLightJournal implements AutoCloseable {
 
     /** Decoded tick payload; type name retains the sentinel verbatim for the tail pass to resolve. */
     record DecodedTick(String typeName, BlockPos pos, int delay, TickPriority priority) {}
+
+    /**
+     * Block-state decode result. {@code state} is null when the block resource
+     * location is absent from {@link BuiltInRegistries#BLOCK}; otherwise it
+     * carries the (possibly partial) reconstructed state. {@code propertiesSkipped}
+     * counts properties whose name no longer exists on the current block
+     * definition or whose string value failed to parse via
+     * {@link Property#getValue(String)}.
+     */
+    record BlockStateDecodeResult(@org.jspecify.annotations.Nullable BlockState state, int propertiesSkipped) {}
 }

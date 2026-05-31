@@ -152,8 +152,8 @@ public final class BakeLightPass {
         long progressFailed = failures.progressAppendFailed.get();
         long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, tailMalformed, progressFailed, totalChunks, elapsedSec);
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), tailMalformed, progressFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -186,7 +186,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}), tail-pass malformed={}, border-load failures={}, progress-marker IO failures={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}), tail-pass malformed={}, border-load failures={}, progress-marker IO failures={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -196,6 +196,7 @@ public final class BakeLightPass {
                 failures.crossRegionWritesApplied.get(),
                 failures.crossRegionWritesMissingTarget.get(),
                 failures.crossRegionWritesIoFailed.get(),
+                failures.crossRegionWritesPartialDecode.get(),
                 tailMalformed,
                 borderLoadFail,
                 progressFailed,
@@ -856,7 +857,11 @@ public final class BakeLightPass {
                         }
                     }
                     case BakeLightJournal.DISCRIMINANT_BLOCK_STATE -> {
-                        BlockState state = BakeLightJournal.decodeBlockState(rec);
+                        BakeLightJournal.BlockStateDecodeResult decoded = BakeLightJournal.decodeBlockState(rec);
+                        if (decoded.propertiesSkipped() > 0) {
+                            failures.crossRegionWritesPartialDecode.addAndGet(decoded.propertiesSkipped());
+                        }
+                        BlockState state = decoded.state();
                         if (state == null) {
                             failures.crossRegionWritesMissingTarget.incrementAndGet();
                             continue;
@@ -1751,6 +1756,15 @@ public final class BakeLightPass {
         final AtomicLong crossRegionWritesMissingTarget = new AtomicLong();
         final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
         final AtomicLong crossRegionWritesApplied = new AtomicLong();
+        // Per-record partial-decode counter for the block-state journal payload.
+        // Bumped once per property whose name no longer exists on the reader's
+        // block definition or whose string value fails to round-trip via the
+        // property's own getValue(String). The bake still applies whatever
+        // properties resolved; this counter exists to surface silent drift
+        // (e.g. a property removed across a Paper version bump) rather than to
+        // gate the pass. Non-zero values are visible in the pass-end summary
+        // but do not trigger the FAILED branch on their own.
+        final AtomicLong crossRegionWritesPartialDecode = new AtomicLong();
         final AtomicLong chunksBaked = new AtomicLong();
         // Tick-replay counters. Aggregated across all workers and the tail
         // pass; surfaced in the pass-end summary.
