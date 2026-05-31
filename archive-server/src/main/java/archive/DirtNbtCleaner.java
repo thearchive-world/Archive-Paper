@@ -697,7 +697,7 @@ public final class DirtNbtCleaner {
         if (completed.isEmpty()) return;
         long start = System.currentTimeMillis();
         AtomicLong rescanned = new AtomicLong();
-        List<Future<?>> futures = new ArrayList<>(completed.size());
+        List<SubmittedRegion> futures = new ArrayList<>(completed.size());
 
         for (String key : completed) {
             // Key shape: "<dim> <folder> <rx> <rz>"; see appendProgress in
@@ -737,31 +737,38 @@ public final class DirtNbtCleaner {
             RegionStorageInfo info = new RegionStorageInfo(
                 server.storageSource.getLevelId(), level.dimension(), storageTypeToken);
 
-            futures.add(pool.submit(() -> {
+            Future<?> future = pool.submit(() -> {
                 try {
                     rescanRegion(info, regionPath, folderPath, rx, rz, kind);
                     rescanned.incrementAndGet();
                 } catch (Throwable t) {
                     LOGGER.error("[The Archive] Rescan of {} failed: {}", regionPath, t.toString());
-                    failures.recordRegion("rescan:" + key);
+                    markRescanFailed(key, completed, failures);
                 }
-            }));
+            });
+            futures.add(new SubmittedRegion(key, future));
         }
 
         // Drain. Same per-future deadline shape as processFolder; watchdog
-        // ticks every ~4 s while waiting.
-        for (Future<?> f : futures) {
+        // ticks every ~4 s while waiting. A cancel-on-deadline here bypasses
+        // the in-lambda catch above (the task may be still queued, or its
+        // thread may not yet observe the interrupt), so the cancel-site has
+        // to call the same failure path or the region's key stays in {@code
+        // completed} with its UUIDs never registered, leaving pending regions
+        // unable to dedup against the missing entries.
+        for (SubmittedRegion task : futures) {
             long deadline = System.currentTimeMillis() + PER_REGION_TIMEOUT_MILLIS;
             while (true) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) {
-                    f.cancel(true);
-                    LOGGER.error("[The Archive] Rescan future exceeded {}m, cancelled",
-                                 PER_REGION_TIMEOUT_MILLIS / 60_000);
+                    task.future().cancel(true);
+                    LOGGER.error("[The Archive] Rescan future exceeded {}m, cancelled: {}",
+                                 PER_REGION_TIMEOUT_MILLIS / 60_000, task.key());
+                    markRescanFailed(task.key(), completed, failures);
                     break;
                 }
                 try {
-                    f.get(Math.min(remaining, 4_000), TimeUnit.MILLISECONDS);
+                    task.future().get(Math.min(remaining, 4_000), TimeUnit.MILLISECONDS);
                     break;
                 } catch (TimeoutException te) {
                     org.spigotmc.WatchdogThread.tick();
@@ -775,6 +782,19 @@ public final class DirtNbtCleaner {
         long elapsedSec = (System.currentTimeMillis() - start) / 1000;
         LOGGER.info("[The Archive] Resumed dedup map: {} UUIDs from {} completed regions in {}s",
                     uuidMap.size(), rescanned.get(), elapsedSec);
+    }
+
+    /**
+     * Mark a rescan as failed: record it in {@code failures} and remove the
+     * key from {@code completed} so the main pass re-cleans the region and
+     * its UUIDs reach {@code uuidMap}. Used by both the in-lambda catch and
+     * the drain-loop cancel-site; the latter cannot rely on the in-lambda
+     * catch because a cancel may bypass the task body (still queued) or
+     * fire before the worker observes the interrupt.
+     */
+    private static void markRescanFailed(String key, Set<String> completed, Failures failures) {
+        failures.recordRegion("rescan:" + key);
+        completed.remove(key);
     }
 
     private static void rescanRegion(
