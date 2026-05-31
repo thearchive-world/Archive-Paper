@@ -111,9 +111,10 @@ public final class DirectNbtUpgrader {
         processMapData(server, completed, progressFile, failures);
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
-        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0) {
-            LOGGER.error("[The Archive] Chunk upgrade FAILED: {} region failures, {} chunk failures, {} chunks succeeded in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), totalChunks, elapsedSec);
+        long progressFailed = failures.progressAppendFailed.get();
+        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
+            LOGGER.error("[The Archive] Chunk upgrade FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} chunks succeeded in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), progressFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -141,8 +142,8 @@ public final class DirectNbtUpgrader {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Chunk upgrade complete: direct-NBT, {} chunks in {}s",
-                        totalChunks, elapsedSec);
+            LOGGER.info("[The Archive] Chunk upgrade complete: direct-NBT, {} chunks, progress-marker IO failures={} in {}s",
+                        totalChunks, progressFailed, elapsedSec);
         }
     }
 
@@ -260,7 +261,7 @@ public final class DirectNbtUpgrader {
                         rx, rz, dfuHelper, splitEntities, failures);
                     chunkCounter.addAndGet(chunks);
                     regionCounter.incrementAndGet();
-                    appendProgress(progressFile, key);
+                    appendProgress(progressFile, key, failures);
                     long now = System.currentTimeMillis();
                     long last = lastLogMillis.get();
                     if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
@@ -468,7 +469,7 @@ public final class DirectNbtUpgrader {
                 } else {
                     skippedCurrent++;
                 }
-                appendProgress(progressFile, key);
+                appendProgress(progressFile, key, failures);
             } catch (Throwable t) {
                 LOGGER.error("[The Archive] Map file {} failed: {}", name, t.toString());
                 failures.recordRegion(key);
@@ -551,12 +552,17 @@ public final class DirectNbtUpgrader {
         }
     }
 
-    private static synchronized void appendProgress(Path path, String entry) {
+    private static synchronized void appendProgress(Path path, String entry, Failures failures) {
         try {
             Files.writeString(path, entry + "\n",
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.SYNC);
         } catch (IOException ex) {
-            LOGGER.warn("[The Archive] Failed to append progress: {}", ex.getMessage());
+            // Escalate to ERROR (was WARN) so a filling disk surfaces above the
+            // per-region INFO lines, and bump a counter so the run-end summary
+            // can flag a pass that completed in-memory but did not record its
+            // progress on disk (a SIGKILL would then redo the whole pass).
+            LOGGER.error("[The Archive] Failed to append progress for {}: {}", entry, ex.getMessage());
+            failures.progressAppendFailed.incrementAndGet();
         }
     }
 
@@ -597,6 +603,13 @@ public final class DirectNbtUpgrader {
         final AtomicLong regionCount = new AtomicLong();
         final ConcurrentLinkedQueue<String> chunkSample = new ConcurrentLinkedQueue<>();
         final AtomicLong chunkCount = new AtomicLong();
+        // Progress-marker write failure counter. Bumped from appendProgress's
+        // catch when Files.writeString throws on the SIGKILL-safe progress file.
+        // The region's work is durable at this point (RegionFile.close called
+        // force(true)), but the resume marker is not. A non-zero count after
+        // the pass means a SIGKILL+restart will redo every region whose marker
+        // never landed.
+        final AtomicLong progressAppendFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {

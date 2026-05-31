@@ -163,9 +163,10 @@ public final class DirtNbtCleaner {
         }
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
-        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0) {
-            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(),
+        long progressFailed = failures.progressAppendFailed.get();
+        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
+            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), progressFailed,
                          totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                          totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                          totals.beTypeMismatchStripped.get(),
@@ -194,12 +195,12 @@ public final class DirtNbtCleaner {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete clean progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks in {}s. UUID map at exit: {} unique UUIDs.",
+            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={} in {}s. UUID map at exit: {} unique UUIDs.",
                         totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                         totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                         totals.beTypeMismatchStripped.get(),
                         totals.uuidDupsStripped.get(), totals.unparseableUuid.get(),
-                        totals.legacyChunksSkipped.get(), elapsedSec, uuidMap.size());
+                        totals.legacyChunksSkipped.get(), progressFailed, elapsedSec, uuidMap.size());
         }
     }
 
@@ -286,7 +287,7 @@ public final class DirtNbtCleaner {
                                                 rx, rz, kind, totals, failures);
                     chunkCounter.addAndGet(chunks);
                     regionCounter.incrementAndGet();
-                    appendProgress(progressFile, key);
+                    appendProgress(progressFile, key, failures);
                     long now = System.currentTimeMillis();
                     long last = lastLogMillis.get();
                     if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
@@ -860,12 +861,17 @@ public final class DirtNbtCleaner {
         }
     }
 
-    private static synchronized void appendProgress(Path path, String entry) {
+    private static synchronized void appendProgress(Path path, String entry, Failures failures) {
         try {
             Files.writeString(path, entry + "\n",
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.SYNC);
         } catch (IOException ex) {
-            LOGGER.warn("[The Archive] Failed to append clean progress: {}", ex.getMessage());
+            // Escalate to ERROR (was WARN) so a filling disk surfaces above the
+            // per-region INFO lines, and bump a counter so the run-end summary
+            // can flag a pass that completed in-memory but did not record its
+            // progress on disk (a SIGKILL would then redo the whole pass).
+            LOGGER.error("[The Archive] Failed to append clean progress for {}: {}", entry, ex.getMessage());
+            failures.progressAppendFailed.incrementAndGet();
         }
     }
 
@@ -900,6 +906,12 @@ public final class DirtNbtCleaner {
         final AtomicLong regionCount = new AtomicLong();
         final ConcurrentLinkedQueue<String> chunkSample = new ConcurrentLinkedQueue<>();
         final AtomicLong chunkCount = new AtomicLong();
+        // Progress-marker write failure counter. Bumped from appendProgress's
+        // catch when Files.writeString throws on the SIGKILL-safe progress file.
+        // The region's work is durable at this point but the resume marker is
+        // not; a non-zero count after the pass means a SIGKILL+restart will
+        // redo every region whose marker never landed.
+        final AtomicLong progressAppendFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {

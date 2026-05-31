@@ -149,9 +149,10 @@ public final class BakeLightPass {
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         long tailMalformed = failures.tailPassMalformedRecords.get();
         long borderLoadFail = failures.borderLoadFailed.get();
-        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} tail-pass malformed records, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, tailMalformed, totalChunks, elapsedSec);
+        long progressFailed = failures.progressAppendFailed.get();
+        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0) {
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, tailMalformed, progressFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -173,7 +174,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}), tail-pass malformed={}, border-load failures={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}), tail-pass malformed={}, border-load failures={}, progress-marker IO failures={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -185,6 +186,7 @@ public final class BakeLightPass {
                 failures.crossRegionWritesIoFailed.get(),
                 tailMalformed,
                 borderLoadFail,
+                progressFailed,
                 elapsedSec);
         }
     }
@@ -236,7 +238,7 @@ public final class BakeLightPass {
                     // failures are already in failures.chunkCount; border-load
                     // failures are already in failures.borderLoadFailed.
                     if (result.perChunkFailures() == 0 && result.borderLoadFailures() == 0) {
-                        appendProgress(progressFile, key);
+                        appendProgress(progressFile, key, failures);
                     }
                     long now = System.currentTimeMillis();
                     long last = lastLogMillis.get();
@@ -1356,12 +1358,17 @@ public final class BakeLightPass {
         }
     }
 
-    private static synchronized void appendProgress(Path path, String entry) {
+    private static synchronized void appendProgress(Path path, String entry, Failures failures) {
         try {
             Files.writeString(path, entry + "\n",
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.SYNC);
         } catch (IOException ex) {
-            LOGGER.warn("[The Archive] Failed to append bake-light progress: {}", ex.getMessage());
+            // Escalate to ERROR (was WARN) so a filling disk surfaces above the
+            // per-region INFO lines, and bump a counter so the run-end summary
+            // can flag a pass that completed in-memory but did not record its
+            // progress on disk (a SIGKILL would then redo the whole pass).
+            LOGGER.error("[The Archive] Failed to append bake-light progress for {}: {}", entry, ex.getMessage());
+            failures.progressAppendFailed.incrementAndGet();
         }
     }
 
@@ -1706,6 +1713,13 @@ public final class BakeLightPass {
         // so its progress key stays out of the file and a re-run with a
         // potentially-repaired neighbour gets another shot.
         final AtomicLong borderLoadFailed = new AtomicLong();
+        // Progress-marker write failure counter. Bumped from appendProgress's
+        // catch when Files.writeString throws on the SIGKILL-safe progress file.
+        // The region's bake work is durable at this point (journal fsynced,
+        // RegionFile force(true) by close()) but the resume marker is not; a
+        // non-zero count after the pass means a SIGKILL+restart will redo
+        // every region whose marker never landed.
+        final AtomicLong progressAppendFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
