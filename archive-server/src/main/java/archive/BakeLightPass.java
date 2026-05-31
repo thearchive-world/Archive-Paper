@@ -150,9 +150,10 @@ public final class BakeLightPass {
         long tailMalformed = failures.tailPassMalformedRecords.get();
         long borderLoadFail = failures.borderLoadFailed.get();
         long progressFailed = failures.progressAppendFailed.get();
-        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, tailMalformed, progressFailed, totalChunks, elapsedSec);
+        long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
+        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} tail-pass malformed records, {} progress-marker IO failures, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, tailMalformed, progressFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -232,12 +233,17 @@ public final class BakeLightPass {
                     RegionResult result = processRegion(info, level, folderPath, rx, rz, journals, failures);
                     chunkCounter.addAndGet(result.parsedChunks());
                     regionCounter.incrementAndGet();
-                    // Per-chunk failures (bake / write-back) and border-load failures
-                    // (corrupt or truncated neighbour region file) both keep this
-                    // region OUT of the progress file so resume re-walks it. Per-chunk
+                    // Per-chunk failures (bake / write-back), border-load failures
+                    // (corrupt or truncated neighbour region file), and cross-region
+                    // journal IO failures (per-entry BE-index appends or accessor
+                    // LEAVES BFS / side-strip / CHEST writes) all keep this region
+                    // OUT of the progress file so resume re-walks it. Per-chunk
                     // failures are already in failures.chunkCount; border-load
-                    // failures are already in failures.borderLoadFailed.
-                    if (result.perChunkFailures() == 0 && result.borderLoadFailures() == 0) {
+                    // failures in failures.borderLoadFailed; cross-region IO
+                    // failures in failures.crossRegionWritesIoFailed.
+                    if (result.perChunkFailures() == 0
+                        && result.borderLoadFailures() == 0
+                        && result.crossRegionWritesIoFailed() == 0) {
                         appendProgress(progressFile, key, failures);
                     }
                     long now = System.currentTimeMillis();
@@ -325,20 +331,28 @@ public final class BakeLightPass {
      * write-back failures observed in this region only; {@code borderLoadFailures}
      * counts neighbour regions whose file existed but failed to load (the
      * owned-region's bake at the boundary then runs against a partial 3x3
-     * cache and produces wrong light along that edge). The submit lambda
-     * uses both counters to decide whether the region key is safe to append
-     * to the progress file; either non-zero leaves the key out so a re-run
-     * gets another shot. Region-level throws bypass this path and are caught
-     * by the lambda's outer try.
+     * cache and produces wrong light along that edge); {@code crossRegionWritesIoFailed}
+     * snapshots {@link BakeLevelAccessor#crossRegionWritesIoFailed} at finalize
+     * (per-entry BE-index journal appends from the non-owned dirty BE loop
+     * plus accessor-driven LEAVES BFS / side-strip / CHEST writes). The submit
+     * lambda uses all three counters to decide whether the region key is safe
+     * to append to the progress file; any non-zero leaves the key out so a
+     * re-run gets another shot. Region-level throws bypass this path and are
+     * caught by the lambda's outer try.
      */
-    private record RegionResult(long parsedChunks, int perChunkFailures, int borderLoadFailures) {}
+    private record RegionResult(
+        long parsedChunks,
+        int perChunkFailures,
+        int borderLoadFailures,
+        int crossRegionWritesIoFailed
+    ) {}
 
     private static RegionResult processRegion(
         RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz,
         BakeLightJournal.JournalRegistry journals, Failures failures
     ) throws IOException {
         Path regionPath = regionFolder.resolve("r." + rx + "." + rz + ".mca");
-        if (!Files.exists(regionPath)) return new RegionResult(0, 0, 0);
+        if (!Files.exists(regionPath)) return new RegionResult(0, 0, 0, 0);
         String regionLabel = "r." + rx + "." + rz;
         Identifier dim = level.dimension().identifier();
         Map<Long, CachedChunk> cache = new HashMap<>(1156);
@@ -454,8 +468,15 @@ public final class BakeLightPass {
                     perChunkFailures++;
                 }
             }
+            // Snapshot AFTER writeback. The accessor's counter accumulates from
+            // both the non-owned BE-index journal loop above and any
+            // accessor-driven LEAVES BFS / side-strip / CHEST writes that hit
+            // an IO failure during bakeChunkUpgrade; a non-zero count here means
+            // at least one cross-region append was lost and the region must NOT
+            // be marked complete.
+            int crossRegionIoFailed = (int) Math.min(Integer.MAX_VALUE, accessor.crossRegionWritesIoFailed.get());
+            return new RegionResult(parsed, perChunkFailures, borderLoadFailures, crossRegionIoFailed);
         }
-        return new RegionResult(parsed, perChunkFailures, borderLoadFailures);
     }
 
     /**
@@ -1687,8 +1708,11 @@ public final class BakeLightPass {
         // region and went through the per-worker journal. {@code missingTarget}
         // is incremented by the tail pass when a destination region file does
         // not exist on disk. {@code ioFailed} is bumped at write time when the
-        // append call itself raises IOException; treated as a hard counter so
-        // operators can confirm zero IO loss.
+        // append call itself raises IOException (BakeLevelAccessor accessor
+        // writes or the per-entry BE-index journal loop in processRegion);
+        // a non-zero per-region snapshot keeps the region OUT of the progress
+        // file via RegionResult.crossRegionWritesIoFailed, and any non-zero
+        // total trips the pass-end FAILED summary.
         final AtomicLong crossRegionWritesJournaled = new AtomicLong();
         final AtomicLong crossRegionWritesMissingTarget = new AtomicLong();
         final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
