@@ -283,11 +283,21 @@ public final class DirtNbtCleaner {
 
             Future<?> future = pool.submit(() -> {
                 try {
-                    long chunks = processRegion(info, regionFile.toPath(), folderPath,
+                    RegionResult result = processRegion(info, regionFile.toPath(), folderPath,
                                                 rx, rz, kind, totals, failures);
-                    chunkCounter.addAndGet(chunks);
+                    chunkCounter.addAndGet(result.parsedChunks());
                     regionCounter.incrementAndGet();
-                    appendProgress(progressFile, key, failures);
+                    // Per-chunk failures keep this region OUT of the progress file
+                    // so resume re-walks it. Mirrors the BakeLightPass appendProgress gate (commit
+                    // 8dbae7f) and the upgrader sibling. Per-chunk strip is
+                    // idempotent under retry: a chunk already cleaned matches
+                    // nothing on re-walk and rewrites zero times, so a region
+                    // re-attempted to catch the corrupt slots costs only the
+                    // clean-only walk on the rest. The retry surfaces persistent
+                    // corruption as a stable signal instead of a hidden no-op.
+                    if (result.perChunkFailures() == 0) {
+                        appendProgress(progressFile, key, failures);
+                    }
                     long now = System.currentTimeMillis();
                     long last = lastLogMillis.get();
                     if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
@@ -335,11 +345,23 @@ public final class DirtNbtCleaner {
                     dim, folderName, chunkCounter.get());
     }
 
-    private static long processRegion(
+    /**
+     * Per-region result. {@code parsedChunks} is the count of chunk slots walked
+     * (rewritten or not); {@code perChunkFailures} counts throws caught by the
+     * per-chunk try-catch below. The submit lambda gates appendProgress on a
+     * zero failure count so a region with corrupt slots stays out of the progress
+     * file and a re-run gets another shot. Mirrors the same-named record in
+     * {@link DirectNbtUpgrader} (per-chunk-only) and the larger one in
+     * {@link BakeLightPass} (per-chunk + border-load + cross-region IO).
+     */
+    private record RegionResult(long parsedChunks, int perChunkFailures) {}
+
+    private static RegionResult processRegion(
         RegionStorageInfo info, Path regionPath, Path regionFolder,
         int rx, int rz, FolderKind kind, Totals totals, Failures failures
     ) throws IOException {
         long processed = 0;
+        int perChunkFailures = 0;
         // sync=false: open WITHOUT DSYNC, mirroring DirectNbtUpgrader (DSYNC was a
         // ~10x perf regression before the fix). RegionFile.close() calls
         // file.force(true), so the file is durable at region granularity. Our
@@ -361,14 +383,17 @@ public final class DirtNbtCleaner {
                         // other ~1023 chunks in the region still complete. The
                         // production fixture has two chunks with malformed JSON
                         // value "Dinner" that crash JsonParser; this catches them.
+                        // The submit lambda gates appendProgress on
+                        // perChunkFailures so the region is re-attempted on resume.
                         String chunkKey = "r." + rx + "." + rz + " chunk(" + pos.x() + "," + pos.z() + ")";
                         LOGGER.error("[The Archive] {} failed: {}", chunkKey, ex.toString());
                         failures.recordChunk(chunkKey);
+                        perChunkFailures++;
                     }
                 }
             }
         }
-        return processed;
+        return new RegionResult(processed, perChunkFailures);
     }
 
     /**

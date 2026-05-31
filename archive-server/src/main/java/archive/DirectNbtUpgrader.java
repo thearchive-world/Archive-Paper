@@ -255,13 +255,27 @@ public final class DirectNbtUpgrader {
 
             Future<?> future = pool.submit(() -> {
                 try {
-                    long chunks = processRegion(
+                    RegionResult result = processRegion(
                         info, regionFile.toPath(), folderPath,
                         entityInfo, entityRegionPath, entitiesFolder,
                         rx, rz, dfuHelper, splitEntities, failures);
-                    chunkCounter.addAndGet(chunks);
+                    chunkCounter.addAndGet(result.parsedChunks());
                     regionCounter.incrementAndGet();
-                    appendProgress(progressFile, key, failures);
+                    // Per-chunk failures keep this region OUT of the progress file
+                    // so resume re-walks it. Mirrors the BakeLightPass appendProgress gate (commit
+                    // 8dbae7f): the region's per-chunk catch records into
+                    // failures.chunkCount, but without this gate the unconditional
+                    // appendProgress would mark the region completed and a re-run
+                    // would silently skip the failed slots wholesale. The chunk-pass
+                    // workload is otherwise idempotent under retry (skip-if-current
+                    // short-circuits already-walked slots) so a retry is harmless
+                    // when the underlying NBT fault clears or the operator restores
+                    // the slot from backup; if the corruption is persistent, the
+                    // retry fails the same way and the operator sees a stable
+                    // signal instead of a hidden no-op.
+                    if (result.perChunkFailures() == 0) {
+                        appendProgress(progressFile, key, failures);
+                    }
                     long now = System.currentTimeMillis();
                     long last = lastLogMillis.get();
                     if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
@@ -321,13 +335,26 @@ public final class DirectNbtUpgrader {
         return chunkCounter.get();
     }
 
-    private static long processRegion(
+    /**
+     * Per-region result. {@code parsedChunks} is the count of chunk slots that
+     * walked successfully (skip-if-current is counted as walked); {@code
+     * perChunkFailures} counts throws caught by the per-chunk try-catch below.
+     * The submit lambda gates appendProgress on a zero failure count so a region
+     * with corrupt slots stays out of the progress file and a re-run gets another
+     * shot. Region-level throws (open / IO on the region itself) bypass this path
+     * and are caught by the lambda's outer try, which records via
+     * {@link Failures#recordRegion}.
+     */
+    private record RegionResult(long parsedChunks, int perChunkFailures) {}
+
+    private static RegionResult processRegion(
         RegionStorageInfo chunkInfo, Path chunkRegionPath, Path regionFolder,
         RegionStorageInfo entityInfo, Path entityRegionPath, Path entitiesFolder,
         int rx, int rz, SimpleRegionStorage dfuHelper, boolean splitEntities,
         Failures failures
     ) throws IOException {
         long processed = 0;
+        int perChunkFailures = 0;
         // sync=false: open WITHOUT StandardOpenOption.DSYNC. With DSYNC every chunk
         // write fsyncs to disk; jstack confirmed all 8 workers stuck in pwrite0 via
         // writeHeader (~5s of CPU each across 51s elapsed), which serialized them
@@ -353,16 +380,18 @@ public final class DirectNbtUpgrader {
                     } catch (Exception ex) {
                         // Per-chunk corruption: log + record but keep going so the
                         // other ~1023 chunks in the region still complete. The region
-                        // gets marked done; failures.chunkSample surfaces the
-                        // operator-visible list at end of run.
+                        // is kept OUT of the progress file by the submit lambda
+                        // gate on perChunkFailures; failures.chunkSample surfaces
+                        // the operator-visible list at end of run.
                         String chunkKey = "r." + rx + "." + rz + " chunk(" + pos.x() + "," + pos.z() + ")";
                         LOGGER.error("[The Archive] {} failed: {}", chunkKey, ex.toString());
                         failures.recordChunk(chunkKey);
+                        perChunkFailures++;
                     }
                 }
             }
         }
-        return processed;
+        return new RegionResult(processed, perChunkFailures);
     }
 
     /**
