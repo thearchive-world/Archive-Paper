@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 31 May 2026 13:38:03 +0200
+Subject: [PATCH] `preserveChunkTimestamps` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index f6544be1b57309be79b9f1897708bfb80a9a773e..1d85344d86768c34baae08207e81a8ce3dae81f0 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -185,6 +185,12 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Run the bake-light pass");
++
++                this.accepts("preserveChunkTimestamps", "Preserve per-chunk region-file slot timestamps. Hooked at the shared RegionFile.write entry, so it covers --upgradeChunks, --cleanDirtyChunks, and --bakeLight, plus any other chunk write while the flag is set; set it only on archive-pipeline invocations, not on a live server or a --forceUpgrade pre-spin. The 1024-slot timestamp table in each .mca header (sector 1) is the only on-disk record of when each chunk was last touched in real history; the pipeline otherwise restamps every touched slot to now() on each write. Set this flag on every pipeline invocation that should preserve those timestamps. No retroactive recovery: a slot already stamped by a flagless prior run stays at that stamp. Default off.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Preserve per-chunk region-file slot timestamps across pipeline writes");
+             }
+         };
+ 

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 31 May 2026 13:37:56 +0200
+Subject: [PATCH] Preserve chunk timestamps when archival flag set
+
+
+diff --git a/net/minecraft/world/level/chunk/storage/RegionFile.java b/net/minecraft/world/level/chunk/storage/RegionFile.java
+index d3aad742161c68894baa7114845d91571a605151..296e8879c7515d57d7e2d156bfc24899d453a240 100644
+--- a/net/minecraft/world/level/chunk/storage/RegionFile.java
++++ b/net/minecraft/world/level/chunk/storage/RegionFile.java
+@@ -385,7 +385,11 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
+             // simply destroy the timestamp header, it's not used
+ 
+             for (int i = 0; i < 32 * 32; ++i) {
+-                this.timestamps.put(i, calculatedOffsets[i] != 0 ? RegionFile.getTimestamp() : 0); // write a valid timestamp for valid chunks, I do not want to find out whatever dumb program actually checks this
++                // The Archive - preserve original slot timestamp on header recalc when --preserveChunkTimestamps is set
++                int newTs = calculatedOffsets[i] != 0 ? RegionFile.getTimestamp() : 0;
++                if (newTs == 0 || !archive.ArchiveSettings.preserveChunkTimestamps() || this.timestamps.get(i) == 0) {
++                    this.timestamps.put(i, newTs); // write a valid timestamp for valid chunks, I do not want to find out whatever dumb program actually checks this
++                }
+             }
+ 
+             // write new header
+@@ -813,7 +817,10 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
+         }
+ 
+         this.offsets.put(offsetIndex, this.packSectorOffset(newSectorNumber, sectorsNeeded));
+-        this.timestamps.put(offsetIndex, getTimestamp());
++        // The Archive - preserve original slot timestamp when --preserveChunkTimestamps is set
++        if (!archive.ArchiveSettings.preserveChunkTimestamps() || this.timestamps.get(offsetIndex) == 0) {
++            this.timestamps.put(offsetIndex, getTimestamp());
++        }
+         this.writeHeader();
+         commitOp.run();
+         if (sectorNumber != 0) {

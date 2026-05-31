@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: terbin <terbin.2b2t@gmail.com>
-Date: Sun, 18 May 2026 00:00:00 +0000
+Date: Mon, 18 May 2026 00:00:00 +0000
 Subject: [PATCH] `bakeLight` CLI arg
 
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
-index 8b2b527cff8fd114e32627ac7770d3771b8de53d..0000000000000000000000000000000000000000 100644
+index 7310c5d0d3cce99157c942259bbfa19dd736de6a..f6544be1b57309be79b9f1897708bfb80a9a773e 100644
 --- a/src/main/java/org/bukkit/craftbukkit/Main.java
 +++ b/src/main/java/org/bukkit/craftbukkit/Main.java
 @@ -179,6 +179,12 @@ public class Main {
@@ -20,4 +20,4 @@ index 8b2b527cff8fd114e32627ac7770d3771b8de53d..00000000000000000000000000000000
 +                    .describedAs("Run the bake-light pass");
              }
          };
-
+ 

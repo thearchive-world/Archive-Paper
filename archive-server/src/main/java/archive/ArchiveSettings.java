@@ -11,12 +11,16 @@ public final class ArchiveSettings {
     private static volatile OptionSet capturedOptions;
     private static volatile boolean upgradeComplete;
     private static volatile boolean upgradeChunksComplete;
+    private static volatile boolean preserveChunkTimestamps;
 
     public static void captureOptions(OptionSet options) {
         capturedOptions = options;
+        preserveChunkTimestamps = options.has("preserveChunkTimestamps")
+            && (options.valueOf("preserveChunkTimestamps") instanceof Boolean b ? b : true);
         warnIfWedgeCombo(options);
         warnIfUpgradeChunksWedge(options);
         warnIfForceUpgradeAndUpgradeChunks(options);
+        warnIfPreserveTimestampsWithoutWritePass(options);
     }
 
     private static void warnIfWedgeCombo(OptionSet options) {
@@ -43,6 +47,12 @@ public final class ArchiveSettings {
         if (!upgradeChunksValue(options)) return;
         if (!options.has("forceUpgrade") && !options.has("recreateRegionFiles")) return;
         LOGGER.info("[The Archive] --forceUpgrade/--recreateRegionFiles and --upgradeChunks are both set. Both DFU the same files; --forceUpgrade runs pre-spin and --upgradeChunks then no-ops on already-current chunks via its skip-if-current pre-flight. Either flag is sufficient on its own.");
+    }
+
+    private static void warnIfPreserveTimestampsWithoutWritePass(OptionSet options) {
+        if (!preserveChunkTimestamps) return;
+        if (options.has("upgradeChunks") || options.has("cleanDirtyChunks") || options.has("bakeLight")) return;
+        LOGGER.warn("[The Archive] --preserveChunkTimestamps without --upgradeChunks/--cleanDirtyChunks/--bakeLight will freeze region-file slot timestamps on every chunk write for the JVM lifetime. Only set this flag on archive-pipeline invocations.");
     }
 
     private static boolean archiveDisableSavingValue(OptionSet o) {
@@ -119,6 +129,10 @@ public final class ArchiveSettings {
         if (o == null || !o.has("bakeLight")) return false;
         Object v = o.valueOf("bakeLight");
         return v instanceof Boolean b ? b : true;
+    }
+
+    public static boolean preserveChunkTimestamps() {
+        return preserveChunkTimestamps;
     }
 
     public static boolean disableSaving() {
