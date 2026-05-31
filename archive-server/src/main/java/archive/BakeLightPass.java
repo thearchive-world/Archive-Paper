@@ -167,7 +167,18 @@ public final class BakeLightPass {
                 LOGGER.error("[The Archive]   ... and {} more chunk failures (sample capped at {})",
                              chunkTotal - chunkShown, CHUNK_FAILURE_SAMPLE_CAP);
             }
-            LOGGER.error("[The Archive] Progress file retained at {} for retry.", progressFile);
+            // Region-retry branch fires when any failure family kept regions
+            // out of the progress file: hard region failures, neighbour border
+            // load failures, cross-region journal IO failures, or a progress
+            // marker write that itself failed (the region's bake is durable but
+            // the marker is not, so resume will rewalk). Otherwise the retained
+            // file documents chunk-level or tail-pass malformed-record failures
+            // a re-run cannot fix (corrupt source NBT or journal payload).
+            if (failures.regionCount.get() > 0 || borderLoadFail > 0 || crossRegionIoFail > 0 || progressFailed > 0) {
+                LOGGER.error("[The Archive] Bake-light progress file retained at {} for retry of failed regions.", progressFile);
+            } else {
+                LOGGER.error("[The Archive] Bake-light progress file retained at {} (no region retries needed; investigate chunk / tail-pass failures offline).", progressFile);
+            }
         } else {
             try {
                 Files.deleteIfExists(progressFile);
@@ -393,6 +404,10 @@ public final class BakeLightPass {
                     LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
                     failures.recordChunk(chunkKey);
                     perChunkFailures++;
+                    // Drop partial side-effects so the write-back prelude cannot
+                    // re-promote this entry via blockEntityIndexDirty or
+                    // hasPendingTicks and double-count the failure on a writeback throw.
+                    entry.clearBakeSideEffects();
                 }
             }
             failures.chunksBaked.addAndGet(baked);
@@ -865,8 +880,8 @@ public final class BakeLightPass {
                         // writers can be skipped without breaking the parser.
                     }
                 }
-            } catch (Throwable t) {
-                LOGGER.warn("[The Archive] bake-light tail pass: malformed record at {} ({})", pos, t.toString());
+            } catch (Exception e) {
+                LOGGER.warn("[The Archive] bake-light tail pass: malformed record at {} ({})", pos, e.toString());
                 failures.tailPassMalformedRecords.incrementAndGet();
             }
         }
@@ -1500,6 +1515,25 @@ public final class BakeLightPass {
         boolean hasPendingTicks() {
             return (pendingBlockTicks != null && !pendingBlockTicks.isEmpty())
                 || (pendingFluidTicks != null && !pendingFluidTicks.isEmpty());
+        }
+
+        /**
+         * Drop every partial side-effect a failed bake may have left on this
+         * entry: pending tick appends (deposited by OTHER entries' neighbor-tick
+         * replay before the failure), the BE-index-dirty bit (set by accessor
+         * BE lookups that ran before the throw), and the {@code dirty} write-back
+         * flag. Called from the bake catch so the write-back prelude cannot
+         * re-promote a known-bad chunk into the write loop and double-count
+         * its failure. Lost-but-acceptable: tick deposits targeting this entry
+         * from other entries' successful bakes will be re-deposited on the
+         * next run (the region is held out of the progress file via
+         * perChunkFailures, so resume re-bakes everything that contributed).
+         */
+        void clearBakeSideEffects() {
+            if (pendingBlockTicks != null) pendingBlockTicks.clear();
+            if (pendingFluidTicks != null) pendingFluidTicks.clear();
+            blockEntityIndexDirty = false;
+            dirty = false;
         }
 
         /**
