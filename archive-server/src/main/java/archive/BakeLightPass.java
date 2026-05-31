@@ -225,10 +225,16 @@ public final class BakeLightPass {
                 server.storageSource.getLevelId(), level.dimension(), "chunk");
             Future<?> future = pool.submit(() -> {
                 try {
-                    long chunks = processRegion(info, level, folderPath, rx, rz, journals, failures);
-                    chunkCounter.addAndGet(chunks);
+                    RegionResult result = processRegion(info, level, folderPath, rx, rz, journals, failures);
+                    chunkCounter.addAndGet(result.parsedChunks());
                     regionCounter.incrementAndGet();
-                    appendProgress(progressFile, key);
+                    // Per-chunk bake or write-back failures keep this region OUT of
+                    // the progress file so resume re-walks the region and the
+                    // failed chunks get re-attempted. The failed chunks themselves
+                    // are already accounted for in failures.chunkCount.
+                    if (result.perChunkFailures() == 0) {
+                        appendProgress(progressFile, key);
+                    }
                     long now = System.currentTimeMillis();
                     long last = lastLogMillis.get();
                     if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
@@ -309,16 +315,26 @@ public final class BakeLightPass {
      * old NBT for that chunk stays on disk untouched; runtime first-load
      * lazy-path code fixes the residual on its own.
      */
-    private static long processRegion(
+    /**
+     * Per-region result. {@code perChunkFailures} counts bake-time and
+     * write-back failures observed in this region only; the submit lambda
+     * uses it to decide whether the region key is safe to append to the
+     * progress file. Region-level throws bypass this path and are caught
+     * by the lambda's outer try.
+     */
+    private record RegionResult(long parsedChunks, int perChunkFailures) {}
+
+    private static RegionResult processRegion(
         RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz,
         BakeLightJournal.JournalRegistry journals, Failures failures
     ) throws IOException {
         Path regionPath = regionFolder.resolve("r." + rx + "." + rz + ".mca");
-        if (!Files.exists(regionPath)) return 0;
+        if (!Files.exists(regionPath)) return new RegionResult(0, 0);
         String regionLabel = "r." + rx + "." + rz;
         Identifier dim = level.dimension().identifier();
         Map<Long, CachedChunk> cache = new HashMap<>(1156);
         long parsed = 0;
+        int perChunkFailures = 0;
         BakeLightJournal journal = journals.forCurrentThread();
         try (RegionFile region = new RegionFile(info, regionPath, regionFolder, false)) {
             parsed = loadCenter(region, level, cache, regionLabel, failures, rx, rz);
@@ -352,6 +368,7 @@ public final class BakeLightPass {
                     String chunkKey = regionLabel + " bake(" + pos.x() + "," + pos.z() + ")";
                     LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
                     failures.recordChunk(chunkKey);
+                    perChunkFailures++;
                 }
             }
             failures.chunksBaked.addAndGet(baked);
@@ -405,6 +422,7 @@ public final class BakeLightPass {
                     String chunkKey = regionLabel + " writeback(" + pos.x() + "," + pos.z() + ")";
                     LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, t.toString(), t);
                     failures.recordChunk(chunkKey);
+                    perChunkFailures++;
                 }
             }
 
@@ -420,7 +438,7 @@ public final class BakeLightPass {
             failures.crossRegionWritesJournaled.addAndGet(accessor.crossRegionWritesJournaled.get());
             failures.crossRegionWritesIoFailed.addAndGet(accessor.crossRegionWritesIoFailed.get());
         }
-        return parsed;
+        return new RegionResult(parsed, perChunkFailures);
     }
 
     /**
