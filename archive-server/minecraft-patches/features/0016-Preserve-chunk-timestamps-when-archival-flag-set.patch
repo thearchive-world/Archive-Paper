@@ -5,10 +5,10 @@ Subject: [PATCH] Preserve chunk timestamps when archival flag set
 
 
 diff --git a/net/minecraft/world/level/chunk/storage/RegionFile.java b/net/minecraft/world/level/chunk/storage/RegionFile.java
-index d3aad742161c68894baa7114845d91571a605151..296e8879c7515d57d7e2d156bfc24899d453a240 100644
+index d3aad742161c68894baa7114845d91571a605151..9d44c03959cd283955033151080de60d41732f3b 100644
 --- a/net/minecraft/world/level/chunk/storage/RegionFile.java
 +++ b/net/minecraft/world/level/chunk/storage/RegionFile.java
-@@ -385,7 +385,11 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
+@@ -384,7 +384,11 @@ public class RegionFile implements AutoCloseable, ca.spottedleaf.moonrise.patche
              // simply destroy the timestamp header, it's not used
  
              for (int i = 0; i < 32 * 32; ++i) {

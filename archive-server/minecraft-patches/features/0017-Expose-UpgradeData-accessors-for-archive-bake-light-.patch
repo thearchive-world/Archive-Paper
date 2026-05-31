@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Sun, 31 May 2026 19:35:21 +0200
+Subject: [PATCH] Expose UpgradeData accessors for archive bake-light pass
+
+
+diff --git a/net/minecraft/world/level/chunk/UpgradeData.java b/net/minecraft/world/level/chunk/UpgradeData.java
+index 08dc6e7d1ba77dc197c635f9efd7efed71e92dfd..6011ef798308a82753038fb7ad945f3c80cc79ef 100644
+--- a/net/minecraft/world/level/chunk/UpgradeData.java
++++ b/net/minecraft/world/level/chunk/UpgradeData.java
+@@ -262,6 +262,34 @@ public class UpgradeData {
+         return this == EMPTY ? EMPTY : new UpgradeData(this);
+     }
+ 
++    // The Archive start - public accessors for archive bake-light pass
++    public int[][] getIndices() {
++        return this.index;
++    }
++
++    public EnumSet<Direction8> getSides() {
++        return this.sides;
++    }
++
++    public List<SavedTick<Block>> getNeighborBlockTicks() {
++        return this.neighborBlockTicks;
++    }
++
++    public List<SavedTick<Fluid>> getNeighborFluidTicks() {
++        return this.neighborFluidTicks;
++    }
++
++    public static UpgradeData.BlockFixer fixerFor(final Block block) {
++        UpgradeData.BlockFixers.values(); // force enum class init so MAP is populated
++        return MAP.getOrDefault(block, UpgradeData.BlockFixers.DEFAULT);
++    }
++
++    public static void runChunkyFixers(final LevelAccessor level) {
++        UpgradeData.BlockFixers.values(); // force enum class init so CHUNKY_FIXERS is populated
++        CHUNKY_FIXERS.forEach(fixer -> fixer.processChunk(level));
++    }
++    // The Archive end - public accessors for archive bake-light pass
++
+     public interface BlockFixer {
+         BlockState updateShape(
+             final BlockState state,

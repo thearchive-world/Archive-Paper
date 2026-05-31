@@ -503,8 +503,8 @@ public final class BakeLightPass {
      */
     private static boolean hasUpgradeWork(UpgradeData ud) {
         if (!ud.isEmpty()) return true;
-        if (!UpgradeDataReflect.neighborBlockTicks(ud).isEmpty()) return true;
-        if (!UpgradeDataReflect.neighborFluidTicks(ud).isEmpty()) return true;
+        if (!ud.getNeighborBlockTicks().isEmpty()) return true;
+        if (!ud.getNeighborFluidTicks().isEmpty()) return true;
         return false;
     }
 
@@ -1028,7 +1028,7 @@ public final class BakeLightPass {
         bakeUpgradeInside(accessor, level, entry, ud, chunkPos);
         // Drain LEAVES BFS queue (the only CHUNKY fixer currently registered);
         // writes routed via BakeLevelAccessor.setBlock to cache or counter.
-        UpgradeDataReflect.runChunkyFixers(accessor);
+        UpgradeData.runChunkyFixers(accessor);
         bakeUpgradeSides(accessor, level, entry, ud, chunkPos);
     }
 
@@ -1041,7 +1041,7 @@ public final class BakeLightPass {
     private static void bakeUpgradeInside(
         BakeLevelAccessor accessor, ServerLevel level, CachedChunk entry, UpgradeData ud, ChunkPos chunkPos
     ) {
-        int[][] indices = UpgradeDataReflect.indices(ud);
+        int[][] indices = ud.getIndices();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos neighbourPos = new BlockPos.MutableBlockPos();
         Direction[] directions = Direction.values();
@@ -1069,7 +1069,7 @@ public final class BakeLightPass {
                     neighbourPos.setWithOffset(pos, direction);
                     if (SectionPos.blockToSectionCoord(neighbourPos.getX()) == chunkPos.x()
                             && SectionPos.blockToSectionCoord(neighbourPos.getZ()) == chunkPos.z()) {
-                        UpgradeData.BlockFixer fixer = UpgradeDataReflect.fixerFor(newState.getBlock());
+                        UpgradeData.BlockFixer fixer = UpgradeData.fixerFor(newState.getBlock());
                         newState = fixer.updateShape(newState, direction, accessor.getBlockState(neighbourPos), accessor, pos, neighbourPos);
                     }
                 }
@@ -1089,7 +1089,7 @@ public final class BakeLightPass {
     private static void bakeUpgradeSides(
         BakeLevelAccessor accessor, ServerLevel level, CachedChunk entry, UpgradeData ud, ChunkPos chunkPos
     ) {
-        EnumSet<Direction8> sides = UpgradeDataReflect.sides(ud);
+        EnumSet<Direction8> sides = ud.getSides();
         if (sides.isEmpty()) return;
         Direction[] updateDirections = Direction.values();
         BlockPos.MutableBlockPos neighbourPos = new BlockPos.MutableBlockPos();
@@ -1119,7 +1119,7 @@ public final class BakeLightPass {
 
                 for (Direction direction : updateDirections) {
                     neighbourPos.setWithOffset(pos, direction);
-                    UpgradeData.BlockFixer fixer = UpgradeDataReflect.fixerFor(newState.getBlock());
+                    UpgradeData.BlockFixer fixer = UpgradeData.fixerFor(newState.getBlock());
                     newState = fixer.updateShape(newState, direction, accessor.getBlockState(neighbourPos), accessor, pos, neighbourPos);
                 }
 
@@ -1157,8 +1157,8 @@ public final class BakeLightPass {
         ServerLevel level, Map<Long, CachedChunk> cache, BakeLightJournal journal, Identifier dim,
         CachedChunk source, UpgradeData ud, ChunkPos sourcePos, Failures failures
     ) throws IOException {
-        List<SavedTick<Block>> blockTicks = UpgradeDataReflect.neighborBlockTicks(ud);
-        List<SavedTick<Fluid>> fluidTicks = UpgradeDataReflect.neighborFluidTicks(ud);
+        List<SavedTick<Block>> blockTicks = ud.getNeighborBlockTicks();
+        List<SavedTick<Fluid>> fluidTicks = ud.getNeighborFluidTicks();
         if (blockTicks.isEmpty() && fluidTicks.isEmpty()) return;
 
         for (SavedTick<Block> tick : blockTicks) {
