@@ -148,9 +148,10 @@ public final class BakeLightPass {
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         long tailMalformed = failures.tailPassMalformedRecords.get();
-        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} tail-pass malformed records, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), tailMalformed, totalChunks, elapsedSec);
+        long borderLoadFail = failures.borderLoadFailed.get();
+        if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0) {
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} tail-pass malformed records, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, tailMalformed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -172,7 +173,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}), tail-pass malformed={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}), tail-pass malformed={}, border-load failures={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -183,6 +184,7 @@ public final class BakeLightPass {
                 failures.crossRegionWritesMissingTarget.get(),
                 failures.crossRegionWritesIoFailed.get(),
                 tailMalformed,
+                borderLoadFail,
                 elapsedSec);
         }
     }
@@ -228,11 +230,12 @@ public final class BakeLightPass {
                     RegionResult result = processRegion(info, level, folderPath, rx, rz, journals, failures);
                     chunkCounter.addAndGet(result.parsedChunks());
                     regionCounter.incrementAndGet();
-                    // Per-chunk bake or write-back failures keep this region OUT of
-                    // the progress file so resume re-walks the region and the
-                    // failed chunks get re-attempted. The failed chunks themselves
-                    // are already accounted for in failures.chunkCount.
-                    if (result.perChunkFailures() == 0) {
+                    // Per-chunk failures (bake / write-back) and border-load failures
+                    // (corrupt or truncated neighbour region file) both keep this
+                    // region OUT of the progress file so resume re-walks it. Per-chunk
+                    // failures are already in failures.chunkCount; border-load
+                    // failures are already in failures.borderLoadFailed.
+                    if (result.perChunkFailures() == 0 && result.borderLoadFailures() == 0) {
                         appendProgress(progressFile, key);
                     }
                     long now = System.currentTimeMillis();
@@ -317,28 +320,33 @@ public final class BakeLightPass {
      */
     /**
      * Per-region result. {@code perChunkFailures} counts bake-time and
-     * write-back failures observed in this region only; the submit lambda
-     * uses it to decide whether the region key is safe to append to the
-     * progress file. Region-level throws bypass this path and are caught
+     * write-back failures observed in this region only; {@code borderLoadFailures}
+     * counts neighbour regions whose file existed but failed to load (the
+     * owned-region's bake at the boundary then runs against a partial 3x3
+     * cache and produces wrong light along that edge). The submit lambda
+     * uses both counters to decide whether the region key is safe to append
+     * to the progress file; either non-zero leaves the key out so a re-run
+     * gets another shot. Region-level throws bypass this path and are caught
      * by the lambda's outer try.
      */
-    private record RegionResult(long parsedChunks, int perChunkFailures) {}
+    private record RegionResult(long parsedChunks, int perChunkFailures, int borderLoadFailures) {}
 
     private static RegionResult processRegion(
         RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz,
         BakeLightJournal.JournalRegistry journals, Failures failures
     ) throws IOException {
         Path regionPath = regionFolder.resolve("r." + rx + "." + rz + ".mca");
-        if (!Files.exists(regionPath)) return new RegionResult(0, 0);
+        if (!Files.exists(regionPath)) return new RegionResult(0, 0, 0);
         String regionLabel = "r." + rx + "." + rz;
         Identifier dim = level.dimension().identifier();
         Map<Long, CachedChunk> cache = new HashMap<>(1156);
         long parsed = 0;
         int perChunkFailures = 0;
+        int borderLoadFailures;
         BakeLightJournal journal = journals.forCurrentThread();
         try (RegionFile region = new RegionFile(info, regionPath, regionFolder, false)) {
             parsed = loadCenter(region, level, cache, regionLabel, failures, rx, rz);
-            loadBorder(info, level, regionFolder, rx, rz, cache);
+            borderLoadFailures = loadBorder(info, level, regionFolder, rx, rz, cache, failures);
 
             BakeLevelAccessor accessor = new BakeLevelAccessor(level, cache, journal, dim);
             BakeLightChunkGetter lightAccess = new BakeLightChunkGetter(level, cache);
@@ -438,7 +446,7 @@ public final class BakeLightPass {
             failures.crossRegionWritesJournaled.addAndGet(accessor.crossRegionWritesJournaled.get());
             failures.crossRegionWritesIoFailed.addAndGet(accessor.crossRegionWritesIoFailed.get());
         }
-        return new RegionResult(parsed, perChunkFailures);
+        return new RegionResult(parsed, perChunkFailures, borderLoadFailures);
     }
 
     /**
@@ -485,22 +493,29 @@ public final class BakeLightPass {
     /**
      * Parse the 1-chunk-wide border around the center region. Reads up to 8
      * neighbour region files (4 cardinal, 4 diagonal); each missing-or-empty
-     * is silently tolerated.
+     * is silently tolerated. Returns the count of neighbour regions whose
+     * file existed on disk but failed to load; the caller treats a non-zero
+     * count as a region-level failure so the owned region's progress key
+     * stays out of the progress file and a re-run with a potentially-repaired
+     * neighbour gets another shot.
      */
-    private static void loadBorder(
-        RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz, Map<Long, CachedChunk> cache
+    private static int loadBorder(
+        RegionStorageInfo info, ServerLevel level, Path regionFolder, int rx, int rz,
+        Map<Long, CachedChunk> cache, Failures failures
     ) {
+        int failed = 0;
         // 4 cardinal neighbours contribute one 32-chunk edge each.
-        loadEdge(info, level, regionFolder, rx - 1, rz, 31, -1, -1, 0, 32, cache);   // west neighbour east edge
-        loadEdge(info, level, regionFolder, rx + 1, rz, 0,  -1, -1, 0, 32, cache);   // east neighbour west edge
-        loadEdge(info, level, regionFolder, rx, rz - 1, -1, 31, 0,  -1, 32, cache);  // north neighbour south edge
-        loadEdge(info, level, regionFolder, rx, rz + 1, -1, 0,  0,  -1, 32, cache);  // south neighbour north edge
+        failed += loadEdge(info, level, regionFolder, rx - 1, rz, 31, -1, -1, 0, 32, cache, failures);
+        failed += loadEdge(info, level, regionFolder, rx + 1, rz, 0,  -1, -1, 0, 32, cache, failures);
+        failed += loadEdge(info, level, regionFolder, rx, rz - 1, -1, 31, 0,  -1, 32, cache, failures);
+        failed += loadEdge(info, level, regionFolder, rx, rz + 1, -1, 0,  0,  -1, 32, cache, failures);
 
         // 4 diagonal neighbours contribute one corner chunk each.
-        loadEdge(info, level, regionFolder, rx - 1, rz - 1, 31, 31, -1, -1, 1, cache);
-        loadEdge(info, level, regionFolder, rx + 1, rz - 1, 0,  31, -1, -1, 1, cache);
-        loadEdge(info, level, regionFolder, rx - 1, rz + 1, 31, 0,  -1, -1, 1, cache);
-        loadEdge(info, level, regionFolder, rx + 1, rz + 1, 0,  0,  -1, -1, 1, cache);
+        failed += loadEdge(info, level, regionFolder, rx - 1, rz - 1, 31, 31, -1, -1, 1, cache, failures);
+        failed += loadEdge(info, level, regionFolder, rx + 1, rz - 1, 0,  31, -1, -1, 1, cache, failures);
+        failed += loadEdge(info, level, regionFolder, rx - 1, rz + 1, 31, 0,  -1, -1, 1, cache, failures);
+        failed += loadEdge(info, level, regionFolder, rx + 1, rz + 1, 0,  0,  -1, -1, 1, cache, failures);
+        return failed;
     }
 
     /**
@@ -510,15 +525,19 @@ public final class BakeLightPass {
      * the corresponding fixed coord (use 0 for full edge, ignored for
      * pinned). {@code count} is the slot count to read. Cardinal edges pass
      * one pinned coord and count=32; corners pin both and count=1.
+     * Returns 1 if the neighbour region file existed but the load threw
+     * mid-flight (truncated header, corrupt sector pointers, etc.); returns
+     * 0 if the load succeeded OR the file was missing (the latter is
+     * tolerated as the documented "no neighbour" state).
      */
-    private static void loadEdge(
+    private static int loadEdge(
         RegionStorageInfo info, ServerLevel level, Path regionFolder,
         int neighbourRx, int neighbourRz,
         int fixedX, int fixedZ, int baseX, int baseZ, int count,
-        Map<Long, CachedChunk> cache
+        Map<Long, CachedChunk> cache, Failures failures
     ) {
         Path neighbourPath = regionFolder.resolve("r." + neighbourRx + "." + neighbourRz + ".mca");
-        if (!Files.exists(neighbourPath)) return;
+        if (!Files.exists(neighbourPath)) return 0;
         try (RegionFile region = new RegionFile(info, neighbourPath, regionFolder, false)) {
             int worldX = neighbourRx << 5;
             int worldZ = neighbourRz << 5;
@@ -530,9 +549,12 @@ public final class BakeLightPass {
                 CachedChunk entry = loadChunk(region, pos, level, false);
                 if (entry != null) cache.put(pos.pack(), entry);
             }
+            return 0;
         } catch (Exception ex) {
             LOGGER.warn("[The Archive] bake-light border load r.{}.{} failed: {}",
                         neighbourRx, neighbourRz, ex.toString());
+            failures.borderLoadFailed.incrementAndGet();
+            return 1;
         }
     }
 
@@ -1670,6 +1692,13 @@ public final class BakeLightPass {
         // pass-end summary would under-report drops and operators could not
         // distinguish zero-loss from N-loss after a SIGKILL+resume.
         final AtomicLong tailPassMalformedRecords = new AtomicLong();
+        // Border-load failure counter. Bumped from loadEdge's catch when a
+        // neighbour region's RegionFile open or per-slot read throws. The
+        // affected owned-region's processRegion treats a non-zero edge-failure
+        // count as a region-level failure (RegionResult.borderLoadFailures)
+        // so its progress key stays out of the file and a re-run with a
+        // potentially-repaired neighbour gets another shot.
+        final AtomicLong borderLoadFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
