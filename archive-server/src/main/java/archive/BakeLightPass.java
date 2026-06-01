@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -60,6 +61,7 @@ import net.minecraft.world.ticks.ProtoChunkTicks;
 import net.minecraft.world.ticks.SavedTick;
 import ca.spottedleaf.moonrise.patches.starlight.light.StarLightEngine;
 import ca.spottedleaf.moonrise.patches.starlight.light.StarLightInterface;
+import ca.spottedleaf.moonrise.patches.starlight.util.SaveUtil;
 import org.slf4j.Logger;
 
 /**
@@ -152,8 +154,8 @@ public final class BakeLightPass {
         long progressFailed = failures.progressAppendFailed.get();
         long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} progress-marker IO failures, {} getChunk-stub-calls, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, progressFailed, failures.getChunkStubCalls.get(), totalChunks, elapsedSec);
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} tail-pass-chunks-skipped, {} progress-marker IO failures, {} getChunk-stub-calls, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, failures.tailPassChunksSkipped.get(), progressFailed, failures.getChunkStubCalls.get(), totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -186,7 +188,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, border-load failures={}, progress-marker IO failures={}, getChunk-stub-calls={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, tail-pass-chunks-skipped={}, border-load failures={}, progress-marker IO failures={}, getChunk-stub-calls={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -199,6 +201,7 @@ public final class BakeLightPass {
                 failures.crossRegionWritesPartialDecode.get(),
                 failures.journalReadMalformed.get(),
                 tailMalformed,
+                failures.tailPassChunksSkipped.get(),
                 borderLoadFail,
                 progressFailed,
                 failures.getChunkStubCalls.get(),
@@ -391,7 +394,9 @@ public final class BakeLightPass {
                 if (!entry.owned) continue;
                 UpgradeData ud = entry.data.upgradeData();
                 boolean upgradeNeeded = hasUpgradeWork(ud);
-                boolean lightNeeded = !entry.data.lightCorrect() || entry.data.heightmaps().isEmpty();
+                boolean lightNeeded = !entry.data.lightCorrect()
+                    || entry.data.heightmaps().isEmpty()
+                    || entry.starlightVersion != SaveUtil.STARLIGHT_LIGHT_VERSION;
                 if (!upgradeNeeded && !lightNeeded) continue;
                 ChunkPos pos = entry.data.chunkPos();
                 try {
@@ -436,6 +441,16 @@ public final class BakeLightPass {
             //      barrier; the journal is already fsynced.
             //   5. Caller (the pool.submit lambda) appends the region key to the
             //      progress file after this method returns successfully.
+            // Counter-inflation note: the fsync-before-writeback order means a
+            // SIGKILL between fsync and writeback leaves the journal durable AND
+            // the source chunks pre-upgrade. On resume the worker re-emits the
+            // same journal records, inflating crossRegionWritesJournaled by the
+            // re-emit count. The on-disk apply remains correct (tail-pass dedup
+            // via UNIQUE_TICK_HASH for ticks; CHEST swap writes bit-identical
+            // NBT). Operators reading a high crossRegionWritesJournaled count
+            // post-resume should compare against crossRegionWritesApplied,
+            // which counts unique tail-pass applies under the tail progress
+            // file's skip-if-applied gate.
             for (CachedChunk entry : cache.values()) {
                 if (entry.owned) continue;
                 if (!entry.blockEntityIndexDirty()) continue;
@@ -631,6 +646,20 @@ public final class BakeLightPass {
         if (journalFiles.isEmpty()) {
             return;
         }
+        // Sort by filename so a tail-pass run on identical on-disk state always
+        // walks journals in the same order. The discover step delegates to
+        // Files.newDirectoryStream, whose iteration order is undefined across
+        // filesystems; replayRecordsAtTarget's per-position BE replacement is
+        // last-writer-wins, so a non-deterministic walk would make the result
+        // FS-iteration-dependent on cross-region duplicates.
+        journalFiles.sort(Comparator.comparing(p -> p.getFileName().toString()));
+
+        Path tailProgress = tailProgressFilePath(server);
+        Set<String> appliedKeys = readProgress(tailProgress);
+        if (!appliedKeys.isEmpty()) {
+            LOGGER.info("[The Archive]   bake-light tail pass: resuming with {} target chunks already applied",
+                        appliedKeys.size());
+        }
 
         Map<TailKey, List<BakeLightJournal.Record>> grouped = new LinkedHashMap<>();
         long totalRecords = 0;
@@ -654,10 +683,17 @@ public final class BakeLightPass {
 
         Map<Identifier, Map<Long, RegionFile>> openRegions = new HashMap<>();
         int chunksApplied = 0;
+        int chunksSkipped = 0;
         int chunksFailed = 0;
         try {
             for (Map.Entry<TailKey, List<BakeLightJournal.Record>> entry : grouped.entrySet()) {
                 TailKey tk = entry.getKey();
+                String progressKey = tailProgressKey(tk);
+                if (appliedKeys.contains(progressKey)) {
+                    chunksSkipped++;
+                    failures.tailPassChunksSkipped.incrementAndGet();
+                    continue;
+                }
                 ServerLevel level = resolveLevel(server, tk.dim());
                 if (level == null) {
                     LOGGER.warn("[The Archive]   bake-light tail pass: unknown dim {} ({} records dropped)",
@@ -683,6 +719,11 @@ public final class BakeLightPass {
                     if (replayRecordsAtTarget(level, region, pos, entry.getValue(), failures)) {
                         chunksApplied++;
                     }
+                    // Append the marker even when replayRecordsAtTarget returned
+                    // false (missing target, null parse). Those records are
+                    // counted into missing-target and re-applying would re-count;
+                    // a second visit produces no new on-disk effect.
+                    appendProgress(tailProgress, progressKey, failures);
                 } catch (Throwable t) {
                     chunksFailed++;
                     String chunkKey = "tail " + tk.dim() + " r." + rx + "." + rz + " c(" + pos.x() + "," + pos.z() + ")";
@@ -702,8 +743,8 @@ public final class BakeLightPass {
             }
         }
 
-        LOGGER.info("[The Archive]   bake-light tail pass complete: {} target chunks updated, {} failed",
-                    chunksApplied, chunksFailed);
+        LOGGER.info("[The Archive]   bake-light tail pass complete: {} target chunks updated, {} skipped (already applied), {} failed",
+                    chunksApplied, chunksSkipped, chunksFailed);
 
         if (chunksFailed == 0) {
             for (Path journal : journalFiles) {
@@ -713,8 +754,13 @@ public final class BakeLightPass {
                     LOGGER.warn("[The Archive] bake-light: failed to delete journal {}: {}", journal, ex.getMessage());
                 }
             }
+            try {
+                Files.deleteIfExists(tailProgress);
+            } catch (IOException ex) {
+                LOGGER.warn("[The Archive] bake-light: failed to delete tail progress file {}: {}", tailProgress, ex.getMessage());
+            }
         } else {
-            LOGGER.warn("[The Archive] bake-light tail pass had {} chunk failures; journals retained for retry", chunksFailed);
+            LOGGER.warn("[The Archive] bake-light tail pass had {} chunk failures; journals and tail progress file retained for retry", chunksFailed);
         }
     }
 
@@ -785,7 +831,10 @@ public final class BakeLightPass {
      *       the NBT payload via {@link NbtIo#read}; the embedded x/y/z fields
      *       carry the BE position. Replace any existing entry in
      *       {@link SerializableChunkData#blockEntities} that targets the same
-     *       position; append if absent. Last writer wins on duplicates.</li>
+     *       position; append if absent. Last writer in journal-filename order
+     *       wins on duplicates: journals are sorted by filename at tail-pass
+     *       entry so the output is reproducible across runs on the same
+     *       on-disk state.</li>
      * </ul>
      *
      * <p>Light-bake state ({@code lightCorrect=true}, heightmaps,
@@ -821,7 +870,10 @@ public final class BakeLightPass {
         // Per-position BE replacements applied to the parsed list. The journal
         // can carry multiple BE records for the same position (a chunk on the
         // boundary of two regions might receive two passes' worth of writes);
-        // last writer wins.
+        // last writer in journal-filename order wins. The CHEST.swapContents
+        // pattern produces bit-identical NBT on both writers, so the order only
+        // affects observability in pathological cases; sorting at tail-pass
+        // entry makes the chosen winner deterministic across runs.
         Map<Long, CompoundTag> beReplacements = null;
 
         for (BakeLightJournal.Record rec : records) {
@@ -1380,12 +1432,37 @@ public final class BakeLightPass {
         }
         SerializableChunkData parsed = SerializableChunkData.parse(level, level.palettedContainerFactory(), chunkTag);
         if (parsed == null) return null;
-        return new CachedChunk(parsed, owned);
+        // The version tag lives at the chunk root, outside SerializableChunkData;
+        // capture it here so the bake-skip predicate can mirror the audit's
+        // hasLightVersion check (AuditDirtyChunks#classifyBakeStatus). A foreign tool that
+        // ever wrote lightCorrect=true + heightmaps without the tag would
+        // otherwise be skipped by the bake AND flagged PARTIAL by the audit
+        // forever; matching the audit's predicate closes that asymmetry.
+        int starlightVersion = chunkTag.getIntOr(SaveUtil.STARLIGHT_VERSION_TAG, -1);
+        return new CachedChunk(parsed, owned, starlightVersion);
     }
 
     private static Path progressFilePath(MinecraftServer server) {
         return server.storageSource.getLevelDirectory().path()
             .resolve(".archive-bakelight-progress.txt");
+    }
+
+    /**
+     * Sibling progress file for the tail-pass. Keyed per target chunk
+     * (one line per applied {@link TailKey}); read at tail-pass entry so a
+     * SIGKILL between two journal-replay applies does not re-apply the
+     * already-replayed chunks on resume. Deleted on clean tail-pass
+     * completion alongside the journals; retained on partial-failure mode.
+     */
+    private static Path tailProgressFilePath(MinecraftServer server) {
+        return server.storageSource.getLevelDirectory().path()
+            .resolve(".archive-bakelight-tail-progress.txt");
+    }
+
+    private static String tailProgressKey(TailKey tk) {
+        int rx = tk.chunkX() >> 5;
+        int rz = tk.chunkZ() >> 5;
+        return tk.dim() + " r." + rx + "." + rz + " c(" + tk.chunkX() + "," + tk.chunkZ() + ")";
     }
 
     private static Set<String> readProgress(Path path) {
@@ -1461,6 +1538,13 @@ public final class BakeLightPass {
     static final class CachedChunk {
         SerializableChunkData data;
         final boolean owned;
+        // Root-level starlight.light_version tag observed at load. Negative when
+        // the tag is absent. Folded into the bake-skip predicate so a chunk that
+        // looks bake-complete to SerializableChunkData (lightCorrect=true,
+        // heightmaps non-empty) but lacks the version tag is still re-baked,
+        // matching the audit's hasLightVersion predicate at
+        // AuditDirtyChunks#classifyBakeStatus.
+        final int starlightVersion;
         boolean dirty;
         private LevelChunkSection @org.jspecify.annotations.Nullable [] sectionsByIndex;
         private @org.jspecify.annotations.Nullable ProtoChunk protoChunk;
@@ -1486,9 +1570,10 @@ public final class BakeLightPass {
         private @org.jspecify.annotations.Nullable Map<Long, BlockEntity> blockEntityIndex;
         private boolean blockEntityIndexDirty;
 
-        CachedChunk(SerializableChunkData data, boolean owned) {
+        CachedChunk(SerializableChunkData data, boolean owned, int starlightVersion) {
             this.data = data;
             this.owned = owned;
+            this.starlightVersion = starlightVersion;
         }
 
         /**
@@ -1796,6 +1881,13 @@ public final class BakeLightPass {
         // pass-end summary would under-report drops and operators could not
         // distinguish zero-loss from N-loss after a SIGKILL+resume.
         final AtomicLong tailPassMalformedRecords = new AtomicLong();
+        // Tail-pass resume counter. Bumped when a target chunk is already in
+        // the tail progress file at runJournalReplayTailPass entry; the apply
+        // is skipped and the chunk's records do not count toward
+        // crossRegionWritesApplied / ticksReplayed. Observability only: the
+        // pass-end summary surfaces it so operators can distinguish a no-op
+        // resumed run from a fresh run that had nothing to do.
+        final AtomicLong tailPassChunksSkipped = new AtomicLong();
         // Border-load failure counter. Bumped from loadEdge's catch when a
         // neighbour region's RegionFile open or per-slot read throws. The
         // affected owned-region's processRegion treats a non-zero edge-failure
