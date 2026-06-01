@@ -1,12 +1,12 @@
 package archive;
 
+import com.mojang.logging.LogUtils;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
-import java.util.stream.Stream;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
@@ -20,7 +20,6 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.attribute.EnvironmentAttributeReader;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ChunkPos;
@@ -52,8 +51,8 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraft.world.ticks.LevelTickAccess;
 import net.minecraft.world.ticks.ScheduledTick;
-import net.minecraft.world.ticks.TickPriority;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
 
 /**
  * Hand-rolled {@link LevelAccessor} stub used by the bake-light pass during
@@ -83,20 +82,33 @@ import org.jspecify.annotations.Nullable;
  * A write targeting a chunk outside the 3x3 working set entirely (no cache
  * entry) is journaled the same way, since the operator-supplied LEAVES BFS
  * can spill beyond the immediate border in pathological corner cases; the
- * tail pass drops it with {@link #crossRegionWritesMissingTarget} if the
- * destination region file does not exist on disk.
+ * tail pass drops it with {@link BakeLightPass.Failures#crossRegionWritesMissingTarget}
+ * if the destination region file does not exist on disk.
  */
 final class BakeLevelAccessor implements LevelAccessor {
+    private static final Logger LOGGER = LogUtils.getLogger();
+    private static final NoOpBlockTicks BLOCK_TICKS = new NoOpBlockTicks();
+    private static final NoOpFluidTicks FLUID_TICKS = new NoOpFluidTicks();
+
     private final ServerLevel level;
     private final Map<Long, BakeLightPass.CachedChunk> cache;
     private final RandomSource random;
-    private final NoOpBlockTicks blockTicks = new NoOpBlockTicks();
-    private final NoOpFluidTicks fluidTicks = new NoOpFluidTicks();
     private final BakeLightJournal journal;
     private final Identifier dim;
 
     final AtomicLong crossRegionWritesJournaled = new AtomicLong();
     final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
+    // Counter for getChunk / getChunkIfLoadedImmediately stub-null returns.
+    // Zero on every observed run today; non-zero surfaces a new vanilla code
+    // path that hit the stub and got a silent null instead of a real chunk,
+    // which can quietly produce wrong-shape state. Observability only; does
+    // not gate the FAILED branch or progress-file retention.
+    final AtomicLong getChunkCalls = new AtomicLong();
+    // First-occurrence flag for setBlock journal IOException logging.
+    // The counter still bumps on every failure and the progress-file gate
+    // still fires; this flag throttles the ERROR-level log to once per
+    // accessor instance so a sustained disk failure does not spam the log.
+    private boolean loggedJournalIoFailure = false;
 
     BakeLevelAccessor(
         final ServerLevel level,
@@ -185,6 +197,12 @@ final class BakeLevelAccessor implements LevelAccessor {
             this.journal.appendBlockState(this.dim, pos, state);
             this.crossRegionWritesJournaled.incrementAndGet();
         } catch (java.io.IOException ex) {
+            if (!this.loggedJournalIoFailure) {
+                LOGGER.error("[The Archive] BakeLevelAccessor.setBlock journal IO failed at {} dim={}; progress retained for retry (further occurrences on this accessor will log at DEBUG)", pos, this.dim, ex);
+                this.loggedJournalIoFailure = true;
+            } else {
+                LOGGER.debug("[The Archive] BakeLevelAccessor.setBlock journal IO failed at {} dim={}", pos, this.dim, ex);
+            }
             this.crossRegionWritesIoFailed.incrementAndGet();
         }
         return true;
@@ -218,12 +236,12 @@ final class BakeLevelAccessor implements LevelAccessor {
 
     @Override
     public LevelTickAccess<Block> getBlockTicks() {
-        return this.blockTicks;
+        return BLOCK_TICKS;
     }
 
     @Override
     public LevelTickAccess<net.minecraft.world.level.material.Fluid> getFluidTicks() {
-        return this.fluidTicks;
+        return FLUID_TICKS;
     }
 
     // ---- LevelAccessor --------------------------------------------------
@@ -318,11 +336,15 @@ final class BakeLevelAccessor implements LevelAccessor {
         // BlockBehaviour.updateShape never calls this in practice for the
         // UpgradeData walk; defensive null return rather than throw so any
         // surprise call path on a non-existent neighbour quietly degrades.
+        // The counter surfaces any such surprise call path in the pass-end
+        // summary so silent wrong-shape state cannot accumulate undetected.
+        this.getChunkCalls.incrementAndGet();
         return null;
     }
 
     @Override
     public @Nullable ChunkAccess getChunkIfLoadedImmediately(final int chunkX, final int chunkZ) {
+        this.getChunkCalls.incrementAndGet();
         return null;
     }
 
