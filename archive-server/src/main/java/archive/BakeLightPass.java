@@ -117,6 +117,7 @@ public final class BakeLightPass {
         long startMillis = System.currentTimeMillis();
         int threadCount = ArchiveSettings.upgradeWorkerCount();
         LOGGER.info("[The Archive] Starting bake-light pass ({} workers)...", threadCount);
+        ArchiveSettings.warnIfDisableSavingAtPassEntry("--bakeLight");
 
         Failures failures = new Failures();
         Path progressFile = progressFilePath(server);

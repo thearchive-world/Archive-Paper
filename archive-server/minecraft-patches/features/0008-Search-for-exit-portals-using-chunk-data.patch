@@ -8,12 +8,15 @@ diff --git a/net/minecraft/world/level/block/NetherPortalBlock.java b/net/minecr
 index b66aa14aea47e3b10c3e28cf25a64be550a8f5e0..b66bb2acefa735d5499d593cb49e389b4ddc34a2 100644
 --- a/net/minecraft/world/level/block/NetherPortalBlock.java
 +++ b/net/minecraft/world/level/block/NetherPortalBlock.java
-@@ -188,7 +188,9 @@ public class NetherPortalBlock extends Block implements Portal {
+@@ -188,7 +188,12 @@ public class NetherPortalBlock extends Block implements Portal {
          final WorldBorder worldBorder
          , org.bukkit.craftbukkit.event.PortalEventResult result // CraftBukkit
      ) {
 -        Optional<BlockPos> exitPortalPos = newLevel.getPortalForcer().findClosestPortalPosition(approximateExitPos, worldBorder, result.searchRadius()); // CraftBukkit
-+        // The Archive - Search for exit portals from chunk data instead of POI
++        // The Archive - Search for exit portals from chunk data instead of POI.
++        // The vanilla worldBorder argument is intentionally dropped: archive worlds
++        // are static snapshots captured at the legacy 30M-block border, so the
++        // search radius is the effective bound and the border clamp would be a no-op.
 +        Optional<BlockPos> exitPortalPos = archive.PortalScanner.findNearestPortal(newLevel, approximateExitPos, result.searchRadius());
 +        // CraftBukkit
          BlockUtil.FoundRectangle exitPortal;

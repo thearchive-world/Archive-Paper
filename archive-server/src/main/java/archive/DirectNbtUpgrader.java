@@ -76,6 +76,7 @@ public final class DirectNbtUpgrader {
         // Downstream smoke tooling greps the log prefix below. Keep "Starting
         // chunk upgrade" and "Chunk upgrade complete" in sync when changing.
         LOGGER.info("[The Archive] Starting chunk upgrade pass (direct-NBT, {} workers)...", threadCount);
+        ArchiveSettings.warnIfDisableSavingAtPassEntry("--upgradeChunks");
 
         Failures failures = new Failures();
         Path progressFile = progressFilePath(server);
@@ -330,7 +331,9 @@ public final class DirectNbtUpgrader {
 
         try {
             dfuHelper.close();
-        } catch (IOException ignored) {
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive]   {} ({}): dfuHelper close failed: {}",
+                        dim, folderName, ex.toString());
         }
         LOGGER.info("[The Archive]   {} ({}): complete, {} chunks processed",
                     dim, folderName, chunkCounter.get());

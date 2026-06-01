@@ -32,7 +32,7 @@ public final class ArchiveSettings {
         if (!force && !recreate) return;
         String flag = force && recreate ? "--forceUpgrade and --recreateRegionFiles"
                 : force ? "--forceUpgrade" : "--recreateRegionFiles";
-        LOGGER.warn("[The Archive] --archiveDisableSaving=true combined with {} will silently no-op every upgrade write. On a pre-26.1 world this wedges WorldFolderMigration in a retry loop. Drop --archiveDisableSaving (or set it to false) to actually persist the upgrade.", flag);
+        LOGGER.error("[The Archive] --archiveDisableSaving=true combined with {} will silently no-op every upgrade write. On a pre-26.1 world this wedges WorldFolderMigration in a retry loop. Drop --archiveDisableSaving (or set it to false) to actually persist the upgrade.", flag);
     }
 
     private static void warnIfUpgradeChunksWedge(OptionSet options) {
@@ -40,7 +40,7 @@ public final class ArchiveSettings {
         if (!archiveDisableSavingValue(options)) return;
         if (!options.has("upgradeChunks")) return;
         if (!upgradeChunksValue(options)) return;
-        LOGGER.warn("[The Archive] --archiveDisableSaving=true combined with --upgradeChunks will silently no-op every write the upgrade pass issues, leaving entities/*.mca and poi/*.mca empty. Drop --archiveDisableSaving (or set it to false) to actually persist the chunk upgrade.");
+        LOGGER.error("[The Archive] --archiveDisableSaving=true combined with --upgradeChunks will silently no-op every write the upgrade pass issues, leaving entities/*.mca and poi/*.mca empty. Drop --archiveDisableSaving (or set it to false) to actually persist the chunk upgrade.");
     }
 
     private static void warnIfForceUpgradeAndUpgradeChunks(OptionSet options) {
@@ -73,6 +73,16 @@ public final class ArchiveSettings {
 
     private static boolean upgradeChunksValue(OptionSet o) {
         return o.valueOf("upgradeChunks") instanceof Boolean b ? b : true;
+    }
+
+    /**
+     * Re-log the disable-saving wedge at ERROR when a post-spin pass starts so the
+     * symptom (no writes, "successful" exit, wedged retry next boot) surfaces
+     * alongside the pass progress instead of buried in earlier boot INFO.
+     */
+    public static void warnIfDisableSavingAtPassEntry(String passLabel) {
+        if (!disableSaving()) return;
+        LOGGER.error("[The Archive] {} starting with --archiveDisableSaving=true: every write this pass issues will be silently dropped. Drop --archiveDisableSaving (or set it to false) to actually persist the pass output.", passLabel);
     }
 
     public static void markUpgradeComplete() {

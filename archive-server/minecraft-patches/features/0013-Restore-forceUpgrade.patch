@@ -29,7 +29,7 @@ index 38b50aaf6473c7692d3372ad7b956355be989bd4..14e5e9859238c7bd6410bc1789fbad87
              RegionFileVersion.configure(settings.getProperties().regionFileComression);
              Path eulaFile = Paths.get("eula.txt");
              Eula eula = new Eula(eulaFile);
-@@ -287,16 +282,15 @@ public class Main {
+@@ -287,16 +282,25 @@ public class Main {
                  return;
              }
  
@@ -39,11 +39,21 @@ index 38b50aaf6473c7692d3372ad7b956355be989bd4..14e5e9859238c7bd6410bc1789fbad87
 -            boolean recreateRegionFilesValue = options.has(recreateRegionFiles);
 -            if (options.has(forceUpgrade) || recreateRegionFilesValue) {
 -                forceUpgrade(access, DataFixers.getDataFixer(), options.has(eraseCache), () -> true, registryHolder, recreateRegionFilesValue);
++            // The Archive - restore the vanilla forceUpgrade / recreateRegionFiles
++            // block that Paper 26.1 short-circuits earlier in main() with a hard
++            // "not yet implemented" return. The literal-string option lookups replace
++            // the original OptionSpec<Void> references because the surrounding parser
++            // setup keeps the OptionSpec locals.
 +            boolean recreateRegionFilesValue = options.has("recreateRegionFiles");
 +            if (options.has("forceUpgrade") || recreateRegionFilesValue) {
 +                forceUpgrade(access, DataFixers.getDataFixer(), options.has("eraseCache"), () -> true, registryHolder, recreateRegionFilesValue);
              }
  
++            // saveDataTag stays outside the if-block, matching vanilla Minecraft:
++            // the level.dat finalize runs on every boot post-worldStem-load so any
++            // in-memory WorldData mutation between worldStem load and server spin
++            // persists. In the archive pipeline this also keeps level.dat DataVersion
++            // in step with each --upgradeChunks pass.
              access.saveDataTag(data);
 -            */
 +            archive.ArchiveSettings.markUpgradeComplete(); // The Archive - upgrade phase done; revert to archive default

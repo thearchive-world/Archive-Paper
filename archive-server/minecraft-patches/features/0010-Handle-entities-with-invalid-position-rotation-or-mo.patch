@@ -8,14 +8,18 @@ diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity
 index 74a2b3dcd303b25e9c26f3e4d4220b390b32f1d5..656af4364461e566f38455e2bdc4806fde4c3d1d 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -2690,8 +2690,12 @@ public abstract class Entity
+@@ -2690,8 +2690,16 @@ public abstract class Entity
      public void load(final ValueInput input) {
          try {
              Vec3 pos = input.read("Pos", Vec3.CODEC).orElse(Vec3.ZERO);
 -            Vec3 motion = input.read("Motion", Vec3.CODEC).orElse(Vec3.ZERO);
 -            Vec2 rotation = input.read("Rotation", Vec2.CODEC).orElse(Vec2.ZERO);
 +            if (archive.NanHelper.isInvalid(pos.x(), pos.y(), pos.z())) {
-+                this.setRemoved(RemovalReason.DISCARDED, org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN);
++                // The Archive - load-time discard for NaN/Inf position; DISCARD is the
++                // catch-all cause and matches RemovalReason.DISCARDED. DESPAWN would
++                // imply a natural mob-despawn lifecycle event, which is misleading
++                // for an entity that never finished loading.
++                this.setRemoved(RemovalReason.DISCARDED, org.bukkit.event.entity.EntityRemoveEvent.Cause.DISCARD);
 +                return;
 +            }
 +            Vec3 motion = input.read("Motion", Vec3.CODEC).orElse(Vec3.ZERO); motion = new Vec3(archive.NanHelper.ensureNonNaN(motion.x), archive.NanHelper.ensureNonNaN(motion.y), archive.NanHelper.ensureNonNaN(motion.z));

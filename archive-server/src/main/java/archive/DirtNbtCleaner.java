@@ -141,6 +141,7 @@ public final class DirtNbtCleaner {
         // keep both in sync when changing.
         LOGGER.info("[The Archive] Starting dirty-chunk clean pass ({} workers, {} block-entity-bearing blocks in registry)...",
                     threadCount, blocksWithEntity.size());
+        ArchiveSettings.warnIfDisableSavingAtPassEntry("--cleanDirtyChunks");
 
         Failures failures = new Failures();
         Path progressFile = progressFilePath(server);
