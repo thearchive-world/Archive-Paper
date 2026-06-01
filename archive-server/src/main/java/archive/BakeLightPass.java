@@ -7,6 +7,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -117,8 +118,9 @@ public final class BakeLightPass {
         int threadCount = ArchiveSettings.upgradeWorkerCount();
         LOGGER.info("[The Archive] Starting bake-light pass ({} workers)...", threadCount);
 
+        Failures failures = new Failures();
         Path progressFile = progressFilePath(server);
-        Set<String> completed = readProgress(progressFile);
+        Set<String> completed = readProgress(progressFile, failures);
         if (!completed.isEmpty()) {
             LOGGER.info("[The Archive] Resuming with {} regions already complete", completed.size());
         }
@@ -126,7 +128,6 @@ public final class BakeLightPass {
         Path worldRoot = server.storageSource.getLevelDirectory().path();
         BakeLightJournal.JournalRegistry journals = new BakeLightJournal.JournalRegistry(worldRoot);
 
-        Failures failures = new Failures();
         long totalChunks = 0;
         ExecutorService pool = Executors.newFixedThreadPool(threadCount,
             new ThreadFactoryBuilder().setNameFormat("archive-bakelight-%d").setDaemon(true).build());
@@ -152,10 +153,11 @@ public final class BakeLightPass {
         long tailMalformed = failures.tailPassMalformedRecords.get();
         long borderLoadFail = failures.borderLoadFailed.get();
         long progressFailed = failures.progressAppendFailed.get();
+        long progressReadFailed = failures.progressReadFailed.get();
         long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} tail-pass-chunks-skipped, {} progress-marker IO failures, {} getChunk-stub-calls, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, failures.tailPassChunksSkipped.get(), progressFailed, failures.getChunkStubCalls.get(), totalChunks, elapsedSec);
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} tail-pass-chunks-skipped, {} progress-marker IO failures, progress-read-failures={}, {} getChunk-stub-calls, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, failures.tailPassChunksSkipped.get(), progressFailed, progressReadFailed, failures.getChunkStubCalls.get(), totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -188,7 +190,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, tail-pass-chunks-skipped={}, border-load failures={}, progress-marker IO failures={}, getChunk-stub-calls={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, tail-pass-chunks-skipped={}, border-load failures={}, progress-marker IO failures={}, progress-read-failures={}, getChunk-stub-calls={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -204,6 +206,7 @@ public final class BakeLightPass {
                 failures.tailPassChunksSkipped.get(),
                 borderLoadFail,
                 progressFailed,
+                progressReadFailed,
                 failures.getChunkStubCalls.get(),
                 elapsedSec);
         }
@@ -535,6 +538,13 @@ public final class BakeLightPass {
         long parsed = 0;
         int xOffset = rx << 5;
         int zOffset = rz << 5;
+        // Labeled `chunks` so an interrupt-aware break can exit both loops at
+        // once. Re-interrupt + short-circuit is load-bearing here: ClosedByInterruptException
+        // arrives once but the surrounding loop body has up to 1024 iterations,
+        // so without the early break a single per-future cancel exhausts
+        // CHUNK_FAILURE_SAMPLE_CAP with same-root-cause noise and buries real
+        // failures from other regions.
+        chunks:
         for (int dx = 0; dx < 32; dx++) {
             for (int dz = 0; dz < 32; dz++) {
                 ChunkPos pos = new ChunkPos(dx + xOffset, dz + zOffset);
@@ -545,6 +555,20 @@ public final class BakeLightPass {
                     cache.put(pos.pack(), entry);
                     parsed++;
                 } catch (Exception ex) {
+                    if (Thread.currentThread().isInterrupted() || ex instanceof ClosedByInterruptException) {
+                        // Per-future drain cancelled the worker; preserve the
+                        // interrupt for the surrounding processRegion (its
+                        // outer try-catch is the safety net) and stop reading
+                        // this region. Whatever partial cache was built so far
+                        // stays, but the worker will not reach the bake or
+                        // writeback loops; the region key stays out of the
+                        // progress file via the recordRegion call at the
+                        // submit-site catch in processLevel.
+                        Thread.currentThread().interrupt();
+                        LOGGER.warn("[The Archive] bake-light {} loadCenter interrupted at chunk ({},{}); aborting region scan",
+                                    regionLabel, pos.x(), pos.z());
+                        break chunks;
+                    }
                     String chunkKey = regionLabel + " parse(" + pos.x() + "," + pos.z() + ")";
                     LOGGER.error("[The Archive] bake-light {} failed: {}", chunkKey, ex.toString());
                     failures.recordChunk(chunkKey);
@@ -655,7 +679,7 @@ public final class BakeLightPass {
         journalFiles.sort(Comparator.comparing(p -> p.getFileName().toString()));
 
         Path tailProgress = tailProgressFilePath(server);
-        Set<String> appliedKeys = readProgress(tailProgress);
+        Set<String> appliedKeys = readProgress(tailProgress, failures);
         if (!appliedKeys.isEmpty()) {
             LOGGER.info("[The Archive]   bake-light tail pass: resuming with {} target chunks already applied",
                         appliedKeys.size());
@@ -1465,7 +1489,7 @@ public final class BakeLightPass {
         return tk.dim() + " r." + rx + "." + rz + " c(" + tk.chunkX() + "," + tk.chunkZ() + ")";
     }
 
-    private static Set<String> readProgress(Path path) {
+    private static Set<String> readProgress(Path path, Failures failures) {
         if (!Files.exists(path)) return ConcurrentHashMap.newKeySet();
         try {
             Set<String> set = ConcurrentHashMap.newKeySet();
@@ -1474,7 +1498,15 @@ public final class BakeLightPass {
             }
             return set;
         } catch (IOException ex) {
-            LOGGER.warn("[The Archive] Failed to read bake-light progress file, starting fresh: {}", ex.getMessage());
+            // Escalate to ERROR (was WARN) and bump a counter so a corrupt
+            // .archive-bakelight-progress.txt or .archive-bakelight-tail-progress.txt
+            // surfaces above the bake's high-volume INFO output. Without the
+            // counter, the silent fall-through replays the whole bake pass and
+            // the operator only notices via wall-clock; the counter makes it
+            // visible at-a-glance in the run-end summary. Shared between the
+            // main progress and tail-pass progress call paths.
+            LOGGER.error("[The Archive] Failed to read bake-light progress file, starting fresh: {}", ex.getMessage());
+            failures.progressReadFailed.incrementAndGet();
             return ConcurrentHashMap.newKeySet();
         }
     }
@@ -1902,6 +1934,13 @@ public final class BakeLightPass {
         // non-zero count after the pass means a SIGKILL+restart will redo
         // every region whose marker never landed.
         final AtomicLong progressAppendFailed = new AtomicLong();
+        // Progress-file read failure counter. Bumped from readProgress when
+        // Files.readAllLines throws on either the main bake progress file or
+        // the tail-pass progress file (same helper covers both call paths).
+        // A non-zero value means the resume baseline was lost and the bake
+        // re-walked from scratch or the tail pass re-applied every journal
+        // record, either of which is a multi-hour cost at archive scale.
+        final AtomicLong progressReadFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {

@@ -77,13 +77,13 @@ public final class DirectNbtUpgrader {
         // chunk upgrade" and "Chunk upgrade complete" in sync when changing.
         LOGGER.info("[The Archive] Starting chunk upgrade pass (direct-NBT, {} workers)...", threadCount);
 
+        Failures failures = new Failures();
         Path progressFile = progressFilePath(server);
-        Set<String> completed = readProgress(progressFile);
+        Set<String> completed = readProgress(progressFile, failures);
         if (!completed.isEmpty()) {
             LOGGER.info("[The Archive] Resuming with {} regions already complete", completed.size());
         }
 
-        Failures failures = new Failures();
         long totalChunks = 0;
         ExecutorService pool = Executors.newFixedThreadPool(threadCount,
             new ThreadFactoryBuilder().setNameFormat("archive-upgrade-%d").setDaemon(true).build());
@@ -112,9 +112,11 @@ public final class DirectNbtUpgrader {
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         long progressFailed = failures.progressAppendFailed.get();
+        long progressReadFailed = failures.progressReadFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
-            LOGGER.error("[The Archive] Chunk upgrade FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} chunks succeeded in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), progressFailed, totalChunks, elapsedSec);
+            LOGGER.error("[The Archive] Chunk upgrade FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, progress-read-failures={}, {} chunks succeeded in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), progressFailed,
+                         progressReadFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -142,8 +144,8 @@ public final class DirectNbtUpgrader {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Chunk upgrade complete: direct-NBT, {} chunks, progress-marker IO failures={} in {}s",
-                        totalChunks, progressFailed, elapsedSec);
+            LOGGER.info("[The Archive] Chunk upgrade complete: direct-NBT, {} chunks, progress-marker IO failures={}, progress-read-failures={} in {}s",
+                        totalChunks, progressFailed, progressReadFailed, elapsedSec);
         }
     }
 
@@ -567,7 +569,7 @@ public final class DirectNbtUpgrader {
             .resolve(".archive-upgrade-progress.txt");
     }
 
-    private static Set<String> readProgress(Path path) {
+    private static Set<String> readProgress(Path path, Failures failures) {
         if (!Files.exists(path)) return ConcurrentHashMap.newKeySet();
         try {
             Set<String> set = ConcurrentHashMap.newKeySet();
@@ -576,7 +578,12 @@ public final class DirectNbtUpgrader {
             }
             return set;
         } catch (IOException ex) {
-            LOGGER.warn("[The Archive] Failed to read progress file, starting fresh: {}", ex.getMessage());
+            // Escalate to ERROR (was WARN) and bump a counter: a corrupt
+            // .archive-upgrade-progress.txt means the whole pipeline restarts
+            // from zero, which on the 1.1 TB main archive is a multi-hour
+            // re-walk. The counter surfaces that loss in the run-end summary.
+            LOGGER.error("[The Archive] Failed to read progress file, starting fresh: {}", ex.getMessage());
+            failures.progressReadFailed.incrementAndGet();
             return ConcurrentHashMap.newKeySet();
         }
     }
@@ -639,6 +646,12 @@ public final class DirectNbtUpgrader {
         // the pass means a SIGKILL+restart will redo every region whose marker
         // never landed.
         final AtomicLong progressAppendFailed = new AtomicLong();
+        // Progress-file read failure counter. Bumped from readProgress when
+        // Files.readAllLines throws on the .archive-upgrade-progress.txt file.
+        // A non-zero value after the pass means resume started from zero and
+        // the whole pass re-walked from scratch; on archive-scale inputs that
+        // is several hours of work the operator may have expected to skip.
+        final AtomicLong progressReadFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {

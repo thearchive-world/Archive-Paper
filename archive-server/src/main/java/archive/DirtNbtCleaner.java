@@ -18,8 +18,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -140,13 +142,13 @@ public final class DirtNbtCleaner {
         LOGGER.info("[The Archive] Starting dirty-chunk clean pass ({} workers, {} block-entity-bearing blocks in registry)...",
                     threadCount, blocksWithEntity.size());
 
+        Failures failures = new Failures();
         Path progressFile = progressFilePath(server);
-        Set<String> completed = readProgress(progressFile);
+        Set<String> completed = readProgress(progressFile, failures);
         if (!completed.isEmpty()) {
             LOGGER.info("[The Archive] Resuming clean with {} regions already complete", completed.size());
         }
 
-        Failures failures = new Failures();
         Totals totals = new Totals();
         Path totalsPath = totalsFilePath(server);
         Map<String, Long> priorTotals = readTotals(totalsPath);
@@ -175,9 +177,12 @@ public final class DirtNbtCleaner {
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         long progressFailed = failures.progressAppendFailed.get();
         long totalsFailed = failures.totalsWriteFailed.get();
+        long drainInterrupted = failures.drainInterrupted.get();
+        long progressReadFailed = failures.progressReadFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
-            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} totals-write failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
+            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} totals-write failures, drain-interrupted={}, progress-read-failures={}; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
                          failures.regionCount.get(), failures.chunkCount.get(), progressFailed, totalsFailed,
+                         drainInterrupted, progressReadFailed,
                          totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                          totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                          totals.beTypeMismatchStripped.get(),
@@ -211,12 +216,13 @@ public final class DirtNbtCleaner {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete clean totals file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={}, totals-write failures={} in {}s. UUID map at exit: {} unique UUIDs.",
+            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={}, totals-write failures={}, drain-interrupted={}, progress-read-failures={} in {}s. UUID map at exit: {} unique UUIDs.",
                         totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                         totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                         totals.beTypeMismatchStripped.get(),
                         totals.uuidDupsStripped.get(), totals.unparseableUuid.get(),
-                        totals.legacyChunksSkipped.get(), progressFailed, totalsFailed, elapsedSec, uuidMap.size());
+                        totals.legacyChunksSkipped.get(), progressFailed, totalsFailed,
+                        drainInterrupted, progressReadFailed, elapsedSec, uuidMap.size());
         }
     }
 
@@ -360,7 +366,32 @@ public final class DirtNbtCleaner {
                     break;
                 } catch (TimeoutException te) {
                     org.spigotmc.WatchdogThread.tick();
-                } catch (Exception ex) {
+                } catch (InterruptedException ie) {
+                    // The drain thread itself was interrupted (the surrounding
+                    // run is being torn down). Preserve the interrupt for the
+                    // caller, log + bump a typed counter, and stop draining.
+                    Thread.currentThread().interrupt();
+                    LOGGER.error("[The Archive] {} ({}) drain interrupted while waiting on {}",
+                                 dim, folderName, task.key());
+                    failures.drainInterrupted.incrementAndGet();
+                    break;
+                } catch (ExecutionException ee) {
+                    // Worker threw out of the lambda body; its own catch (Throwable t)
+                    // at the submit site already recorded the region failure. Log
+                    // the unwrapped cause at debug for offline diagnosis and move on.
+                    LOGGER.debug("[The Archive] {} ({}) worker threw for {} (already recorded)",
+                                 dim, folderName, task.key(), ee.getCause());
+                    break;
+                } catch (CancellationException ce) {
+                    // The future was cancelled from outside the deadline branch
+                    // above (no current caller does this, but a future shutdown
+                    // hook could). Record the failure so it surfaces in the
+                    // summary; today's deadline path already records before
+                    // cancelling, so this branch is reachable only via external
+                    // cancellation.
+                    LOGGER.error("[The Archive] {} ({}) drain saw external cancel of {}",
+                                 dim, folderName, task.key());
+                    failures.recordRegion(task.key());
                     break;
                 }
             }
@@ -726,7 +757,7 @@ public final class DirtNbtCleaner {
 
             Future<?> future = pool.submit(() -> {
                 try {
-                    rescanRegion(info, regionPath, folderPath, rx, rz, kind);
+                    rescanRegion(info, regionPath, folderPath, rx, rz, kind, failures);
                     rescanned.incrementAndGet();
                 } catch (Throwable t) {
                     LOGGER.error("[The Archive] Rescan of {} failed: {}", regionPath, t.toString());
@@ -759,7 +790,30 @@ public final class DirtNbtCleaner {
                     break;
                 } catch (TimeoutException te) {
                     org.spigotmc.WatchdogThread.tick();
-                } catch (Exception ex) {
+                } catch (InterruptedException ie) {
+                    // Drain thread interrupted mid-rescan: preserve the interrupt
+                    // and stop. The rescan's job is to repopulate uuidMap; a
+                    // truncated rescan leaves some completed regions unrescanned
+                    // and their UUIDs absent from the dedup map, but the surrounding
+                    // shutdown signal means subsequent pending regions will not
+                    // run anyway.
+                    Thread.currentThread().interrupt();
+                    LOGGER.error("[The Archive] Rescan drain interrupted while waiting on {}", task.key());
+                    failures.drainInterrupted.incrementAndGet();
+                    break;
+                } catch (ExecutionException ee) {
+                    // Worker threw out of the rescan lambda; its own catch
+                    // (Throwable t) at the submit site already called
+                    // markRescanFailed. Log the unwrapped cause at debug.
+                    LOGGER.debug("[The Archive] Rescan worker threw for {} (already recorded)",
+                                 task.key(), ee.getCause());
+                    break;
+                } catch (CancellationException ce) {
+                    // External cancellation (not the deadline branch above);
+                    // mirror the deadline path so the region's UUIDs aren't
+                    // silently lost from the dedup map.
+                    LOGGER.error("[The Archive] Rescan drain saw external cancel of {}", task.key());
+                    markRescanFailed(task.key(), completed, failures);
                     break;
                 }
             }
@@ -785,7 +839,8 @@ public final class DirtNbtCleaner {
     }
 
     private static void rescanRegion(
-        RegionStorageInfo info, Path regionPath, Path regionFolder, int rx, int rz, FolderKind kind
+        RegionStorageInfo info, Path regionPath, Path regionFolder, int rx, int rz, FolderKind kind,
+        Failures failures
     ) throws IOException {
         // sync=false: rescan is read-only (no writes back to the region), so
         // DSYNC is a strict no-op cost. Matches the main-pass open at processRegion
@@ -804,7 +859,14 @@ public final class DirtNbtCleaner {
                         if (in == null) continue;
                         root = NbtIo.read(in);
                     } catch (Exception ex) {
-                        // Per-chunk corruption: skip silently during rescan.
+                        // Mirror the main-pass processChunk catch: log + record so
+                        // a per-chunk corruption surfaces in the FAILED summary and
+                        // the chunk-sample buffer instead of vanishing silently.
+                        // The "rescan-chunk" prefix disambiguates from main-pass
+                        // chunk failures in the same key namespace.
+                        String chunkKey = "r." + rx + "." + rz + " rescan-chunk(" + pos.x() + "," + pos.z() + ")";
+                        LOGGER.error("[The Archive] {} failed: {}", chunkKey, ex.toString());
+                        failures.recordChunk(chunkKey);
                         continue;
                     }
                     if (kind == FolderKind.REGION && root.getCompound("Level").isPresent()) continue;
@@ -837,7 +899,7 @@ public final class DirtNbtCleaner {
             .resolve(".archive-clean-progress.txt");
     }
 
-    private static Set<String> readProgress(Path path) {
+    private static Set<String> readProgress(Path path, Failures failures) {
         if (!Files.exists(path)) return ConcurrentHashMap.newKeySet();
         try {
             Set<String> set = ConcurrentHashMap.newKeySet();
@@ -846,7 +908,13 @@ public final class DirtNbtCleaner {
             }
             return set;
         } catch (IOException ex) {
-            LOGGER.warn("[The Archive] Failed to read clean progress file, starting fresh: {}", ex.getMessage());
+            // Escalate to ERROR (was WARN) so a corrupt or unreadable progress
+            // file surfaces above the pass's INFO lines; the operator otherwise
+            // loses every region already marked complete and re-walks the whole
+            // pipeline from zero (a multi-hour cost on the 1.1 TB main archive).
+            // Counter bump makes the loss visible at-a-glance in the summary.
+            LOGGER.error("[The Archive] Failed to read clean progress file, starting fresh: {}", ex.getMessage());
+            failures.progressReadFailed.incrementAndGet();
             return ConcurrentHashMap.newKeySet();
         }
     }
@@ -970,6 +1038,17 @@ public final class DirtNbtCleaner {
         // because progress wasn't appended, but its strips will accrue zero
         // since the disk is already clean).
         final AtomicLong totalsWriteFailed = new AtomicLong();
+        // Drain-loop interrupt counter. Bumped from the per-future drain (both
+        // processFolder and rescanCompletedRegions) when future.get throws
+        // InterruptedException, i.e. the drain thread itself is being torn
+        // down. The interrupt is re-asserted on the thread so the caller can
+        // observe it; this counter surfaces that the run did not drain cleanly.
+        final AtomicLong drainInterrupted = new AtomicLong();
+        // Progress-file read failure counter. Bumped from readProgress when
+        // Files.readAllLines throws (corrupt or unreadable .archive-clean-progress.txt).
+        // A non-zero value means resume started from zero rather than the prior
+        // run's checkpoint, so the entire pass was re-walked.
+        final AtomicLong progressReadFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
