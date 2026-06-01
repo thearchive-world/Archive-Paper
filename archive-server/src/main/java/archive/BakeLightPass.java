@@ -232,85 +232,129 @@ public final class BakeLightPass {
         AtomicLong chunkCounter = new AtomicLong();
         AtomicInteger regionCounter = new AtomicInteger();
         int totalRegions = files.length;
-        List<SubmittedRegion> submitted = new ArrayList<>();
         long folderStartMillis = System.currentTimeMillis();
         AtomicLong lastLogMillis = new AtomicLong(folderStartMillis);
 
+        // Stencil-color regions by (floorMod(rx,3), floorMod(rz,3)). Same-color
+        // regions are at least two region-widths apart on one axis, so their
+        // 1-region-wide loadBorder neighbour sets are disjoint. Running one
+        // color at a time with a barrier between colors makes adjacent-region
+        // border reads race-free by construction: while a worker is writing
+        // back a region in color N, no other worker is reading that region as
+        // a border because every region in color N is owned by some worker in
+        // this batch and no border-read of a color-N region happens until
+        // color N completes (border reads only reach 1 region away, and the
+        // next color's regions are not adjacent to any color-N region).
+        List<List<RegionEntry>> regionsByColor = new ArrayList<>(9);
+        for (int i = 0; i < 9; i++) {
+            regionsByColor.add(new ArrayList<>());
+        }
+        int matchedRegions = 0;
         for (File regionFile : files) {
             Matcher matcher = REGION_FILE_REGEX.matcher(regionFile.getName());
             if (!matcher.matches()) continue;
             int rx = Integer.parseInt(matcher.group(1));
             int rz = Integer.parseInt(matcher.group(2));
-            String key = dim + " bakelight " + rx + " " + rz;
-            if (completed.contains(key)) {
-                regionCounter.incrementAndGet();
-                continue;
-            }
-
-            RegionStorageInfo info = new RegionStorageInfo(
-                server.storageSource.getLevelId(), level.dimension(), "chunk");
-            Future<?> future = pool.submit(() -> {
-                try {
-                    RegionResult result = processRegion(info, level, folderPath, rx, rz, journals, failures);
-                    chunkCounter.addAndGet(result.parsedChunks());
-                    regionCounter.incrementAndGet();
-                    // Per-chunk failures (bake / write-back), border-load failures
-                    // (corrupt or truncated neighbour region file), and cross-region
-                    // journal IO failures (per-entry BE-index appends or accessor
-                    // LEAVES BFS / side-strip / CHEST writes) all keep this region
-                    // OUT of the progress file so resume re-walks it. Per-chunk
-                    // failures are already in failures.chunkCount; border-load
-                    // failures in failures.borderLoadFailed; cross-region IO
-                    // failures in failures.crossRegionWritesIoFailed.
-                    if (result.perChunkFailures() == 0
-                        && result.borderLoadFailures() == 0
-                        && result.crossRegionWritesIoFailed() == 0) {
-                        appendProgress(progressFile, key, failures);
-                    }
-                    long now = System.currentTimeMillis();
-                    long last = lastLogMillis.get();
-                    if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
-                        int doneNow = regionCounter.get();
-                        long chunksNow = chunkCounter.get();
-                        long rate = chunksNow * 1000L / Math.max(1, now - folderStartMillis);
-                        LOGGER.info("[The Archive]   bake-light {}: {} / {} regions ({} chunks, {} ch/s)",
-                                    dim, doneNow, totalRegions, chunksNow, rate);
-                    }
-                } catch (Throwable t) {
-                    LOGGER.error("[The Archive] bake-light {} region r.{}.{} failed",
-                                 dim, rx, rz, t);
-                    failures.recordRegion(key);
-                }
-            });
-            submitted.add(new SubmittedRegion(key, future));
+            int color = (Math.floorMod(rx, 3) * 3) + Math.floorMod(rz, 3);
+            regionsByColor.get(color).add(new RegionEntry(rx, rz));
+            matchedRegions++;
         }
+        StringBuilder colorHist = new StringBuilder(64);
+        for (int c = 0; c < 9; c++) {
+            if (c > 0) colorHist.append(',');
+            colorHist.append(regionsByColor.get(c).size());
+        }
+        LOGGER.info("[The Archive] Bake-light {}: stencil colors (rx%3,rz%3) sizes [{}] across {} regions",
+                    dim, colorHist, matchedRegions);
 
-        for (SubmittedRegion task : submitted) {
-            long deadline = System.currentTimeMillis() + PER_REGION_TIMEOUT_MILLIS;
-            while (true) {
-                long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0) {
-                    task.future().cancel(true);
-                    LOGGER.error("[The Archive] bake-light {} region task exceeded {}m, cancelled: {}",
-                                 dim, PER_REGION_TIMEOUT_MILLIS / 60_000, task.key());
-                    failures.recordRegion(task.key());
-                    break;
+        for (int color = 0; color < 9; color++) {
+            List<RegionEntry> colorEntries = regionsByColor.get(color);
+            if (colorEntries.isEmpty()) continue;
+            long colorStartMillis = System.currentTimeMillis();
+            LOGGER.info("[The Archive]   bake-light {}: color {} starting ({} regions)",
+                        dim, color, colorEntries.size());
+
+            List<SubmittedRegion> submitted = new ArrayList<>(colorEntries.size());
+            for (RegionEntry entry : colorEntries) {
+                int rx = entry.rx();
+                int rz = entry.rz();
+                String key = dim + " bakelight " + rx + " " + rz;
+                if (completed.contains(key)) {
+                    regionCounter.incrementAndGet();
+                    continue;
                 }
-                try {
-                    task.future().get(Math.min(remaining, 4_000), TimeUnit.MILLISECONDS);
-                    break;
-                } catch (TimeoutException te) {
-                    org.spigotmc.WatchdogThread.tick();
-                } catch (Exception ex) {
-                    break;
-                }
+
+                RegionStorageInfo info = new RegionStorageInfo(
+                    server.storageSource.getLevelId(), level.dimension(), "chunk");
+                Future<?> future = pool.submit(() -> {
+                    try {
+                        RegionResult result = processRegion(info, level, folderPath, rx, rz, journals, failures);
+                        chunkCounter.addAndGet(result.parsedChunks());
+                        regionCounter.incrementAndGet();
+                        // Per-chunk failures (bake / write-back), border-load failures
+                        // (corrupt or truncated neighbour region file), and cross-region
+                        // journal IO failures (per-entry BE-index appends or accessor
+                        // LEAVES BFS / side-strip / CHEST writes) all keep this region
+                        // OUT of the progress file so resume re-walks it. Per-chunk
+                        // failures are already in failures.chunkCount; border-load
+                        // failures in failures.borderLoadFailed; cross-region IO
+                        // failures in failures.crossRegionWritesIoFailed.
+                        if (result.perChunkFailures() == 0
+                            && result.borderLoadFailures() == 0
+                            && result.crossRegionWritesIoFailed() == 0) {
+                            appendProgress(progressFile, key, failures);
+                        }
+                        long now = System.currentTimeMillis();
+                        long last = lastLogMillis.get();
+                        if (now - last >= PROGRESS_LOG_INTERVAL_MILLIS && lastLogMillis.compareAndSet(last, now)) {
+                            int doneNow = regionCounter.get();
+                            long chunksNow = chunkCounter.get();
+                            long rate = chunksNow * 1000L / Math.max(1, now - folderStartMillis);
+                            LOGGER.info("[The Archive]   bake-light {}: {} / {} regions ({} chunks, {} ch/s)",
+                                        dim, doneNow, totalRegions, chunksNow, rate);
+                        }
+                    } catch (Throwable t) {
+                        LOGGER.error("[The Archive] bake-light {} region r.{}.{} failed",
+                                     dim, rx, rz, t);
+                        failures.recordRegion(key);
+                    }
+                });
+                submitted.add(new SubmittedRegion(key, future));
             }
-            org.spigotmc.WatchdogThread.tick();
+
+            for (SubmittedRegion task : submitted) {
+                long deadline = System.currentTimeMillis() + PER_REGION_TIMEOUT_MILLIS;
+                while (true) {
+                    long remaining = deadline - System.currentTimeMillis();
+                    if (remaining <= 0) {
+                        task.future().cancel(true);
+                        LOGGER.error("[The Archive] bake-light {} region task exceeded {}m, cancelled: {}",
+                                     dim, PER_REGION_TIMEOUT_MILLIS / 60_000, task.key());
+                        failures.recordRegion(task.key());
+                        break;
+                    }
+                    try {
+                        task.future().get(Math.min(remaining, 4_000), TimeUnit.MILLISECONDS);
+                        break;
+                    } catch (TimeoutException te) {
+                        org.spigotmc.WatchdogThread.tick();
+                    } catch (Exception ex) {
+                        break;
+                    }
+                }
+                org.spigotmc.WatchdogThread.tick();
+            }
+
+            long colorElapsedSec = (System.currentTimeMillis() - colorStartMillis) / 1000;
+            LOGGER.info("[The Archive]   bake-light {}: color {} done in {}s",
+                        dim, color, colorElapsedSec);
         }
 
         LOGGER.info("[The Archive]   bake-light {}: complete, {} chunks walked", dim, chunkCounter.get());
         return chunkCounter.get();
     }
+
+    private record RegionEntry(int rx, int rz) {}
 
     /**
      * Worker flow for one region. Sequence:
