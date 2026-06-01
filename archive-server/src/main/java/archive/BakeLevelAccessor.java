@@ -84,6 +84,19 @@ import org.slf4j.Logger;
  * can spill beyond the immediate border in pathological corner cases; the
  * tail pass drops it with {@link BakeLightPass.Failures#crossRegionWritesMissingTarget}
  * if the destination region file does not exist on disk.
+ *
+ * <p>Registry / datapack invariant: {@link #registryAccess} and
+ * {@link #environmentAttributes} return the backing {@link ServerLevel}'s
+ * accessors directly. The bake pipeline runs against whatever registry and
+ * datapack state was loaded at JVM start. The CHEST {@code swapContents}
+ * path calls {@link BlockEntity#loadStatic} with this registry to resolve
+ * item ids; modded items, custom enchantments, or datapack additions that
+ * existed in the source world but are not loaded here silently drop during
+ * the swap. The operator is responsible for ensuring the offline pipeline
+ * runs with the same datapack and mod set as the source world; running
+ * without parity loses data with no counter increment because the
+ * vanilla {@code loadStatic} path treats unknown ids as legitimate empties.
+ * No equivalent check fires from this stub.
  */
 final class BakeLevelAccessor implements LevelAccessor {
     private static final Logger LOGGER = LogUtils.getLogger();

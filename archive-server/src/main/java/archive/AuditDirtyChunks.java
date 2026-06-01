@@ -563,10 +563,28 @@ public final class AuditDirtyChunks {
         // but no light pair and no heightmaps. Distinguishing "0 markers" from
         // "1 marker (drained UpgradeData only)" would over-report PARTIAL on
         // every pre-bake chunk, so PENDING covers the pre-bake state.
+        //
+        // Deliberate tolerance: the audit aggregates absent-UpgradeData and
+        // drained-UpgradeData chunks into the same bucket at every status
+        // level. COMPLETE requires upgradeDataDrained=true and the lit pair +
+        // heightmaps; both equivalent shapes pass through identically. PARTIAL
+        // and PENDING likewise do not distinguish. A downstream consumer that
+        // needs the absent-vs-drained distinction (e.g. to attribute a
+        // post-bake PARTIAL chunk back to "bake replayed UpgradeData ticks"
+        // vs "UpgradeData was absent on disk before the bake started") must
+        // add a dedicated counter; the four BakeStatus buckets are
+        // consumer-blind on this distinction by design.
         boolean anyBakeArtifact = hasLightOn || hasLightVersion || hasAllHeightmaps;
         return anyBakeArtifact ? BakeStatus.PARTIAL : BakeStatus.PENDING;
     }
 
+    /**
+     * Returns true if a chunk's {@code UpgradeData} carries no remaining
+     * upgrade work for the bake to drain. Absent {@code UpgradeData} and a
+     * drained-but-present {@code UpgradeData} both return true; callers that
+     * need to distinguish those two shapes must inspect the root tag
+     * themselves (see the consumer-blind note above {@link #classifyBakeStatus}).
+     */
     private static boolean upgradeDataIsDrained(CompoundTag root) {
         CompoundTag ud = root.getCompoundOrEmpty("UpgradeData");
         if (ud.isEmpty()) return true;
