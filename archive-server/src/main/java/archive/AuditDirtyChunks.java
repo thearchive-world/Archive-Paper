@@ -6,13 +6,17 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -131,6 +135,46 @@ public final class AuditDirtyChunks {
         beIdToBlocks = BlockEntityRegistry.computeBeIdToBlocks();
         uuidCounts = new ConcurrentHashMap<>();
         Totals total = new Totals();
+        Failures failures = new Failures();
+
+        // Resume infrastructure: per-region progress markers at
+        // .archive-audit-progress.txt, an aggregate Totals snapshot at
+        // .archive-audit-totals.txt. Per-region key shape is
+        // "<dim-identifier> <folder-name> <rx> <rz>" with folder-name in
+        // {region, entities, poi} to track each of the audit's three
+        // file-kind walks independently. A SIGKILL inside one kind's walk
+        // re-walks only that file on resume; the prior kinds are skipped.
+        //
+        // Snapshot is written BEFORE the progress marker (atomic rename for
+        // the totals; append for progress). SIGKILL between the two leaves
+        // the region's contribution in the loaded totals on the next run
+        // AND the region absent from progress, so it re-walks AND
+        // re-accrues. This is the cleaner-shape bounded-drift behaviour
+        // documented in feedback_resume_bounded_drift_invariant. Audit is
+        // single-threaded (one worker), so the only drift source is the
+        // SIGKILL window itself, not in-flight worker contributions.
+        //
+        // uuidCounts is intentionally NOT snapshotted. The map can reach
+        // ~150M entries on the 1.1 TB main archive (~7.5 GB serialised);
+        // a resumed run rebuilds uuidCounts from scratch using only the
+        // not-yet-completed regions, so the summary's uuid-dups field
+        // under-counts cross-region duplicates (a UUID present once in a
+        // pre-kill-completed region and once in a resumed region is not
+        // detected). On a post-cleaner fixture uuid-dups is 0 and the
+        // under-count is moot; on a pre-cleaner fixture the operator
+        // should treat resumed-run uuid-dups as a lower bound.
+        Path progressFile = progressFilePath(server);
+        Path totalsFile = totalsFilePath(server);
+        Set<String> completed = readProgress(progressFile, failures);
+        if (!completed.isEmpty()) {
+            LOGGER.info("[The Archive] Resuming audit with {} regions previously marked complete", completed.size());
+            Totals prior = readTotalsSnapshot(totalsFile, failures);
+            if (prior != null) {
+                LOGGER.info("[The Archive] Loaded prior audit totals: {} chunks, {} block entities, {} entities, {} bake-complete",
+                            prior.chunks, prior.blockEntities, prior.entities, prior.bakeComplete);
+                total.add(prior);
+            }
+        }
 
         // Starlight light-version guardrail. The audit's bake-complete vs
         // bake-pending classification compares the per-chunk
@@ -166,8 +210,7 @@ public final class AuditDirtyChunks {
         Thread worker = new Thread(() -> {
             try {
                 for (ServerLevel level : server.getAllLevels()) {
-                    Totals dim = auditLevel(level);
-                    total.add(dim);
+                    auditLevel(level, total, completed, progressFile, totalsFile, failures);
                 }
             } catch (Throwable t) {
                 LOGGER.error("[The Archive] Audit worker failed: {}", t.toString(), t);
@@ -215,12 +258,32 @@ public final class AuditDirtyChunks {
             .mapToLong(c -> c.get() - 1)
             .filter(n -> n > 0)
             .sum();
-        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid in {}s",
+        long progressReadFailed = failures.progressReadFailed.get();
+        long totalsWriteFailed = failures.totalsWriteFailed.get();
+        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid, progress-read-failures={}, totals-write failures={} in {}s",
                     total.chunks, total.blockEntities, total.ghostBes, total.beCoordMismatch,
                     total.beTypeMismatch,
                     total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
                     total.bakeComplete, total.bakePartial, total.bakePending, total.bakeIneligible,
-                    total.poiValidSections, total.poiInvalidSections, elapsedSec);
+                    total.poiValidSections, total.poiInvalidSections,
+                    progressReadFailed, totalsWriteFailed, elapsedSec);
+
+        // Clean exit: remove the per-region progress markers and the
+        // aggregate totals snapshot. The next audit run starts from zero.
+        // A non-zero progressReadFailed at this point already logged in
+        // readProgress; the delete failures here are tolerated (non-fatal
+        // observability) since they leave stale files that the next run
+        // either reads cleanly or fails-to-read with the same counter.
+        try {
+            Files.deleteIfExists(progressFile);
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive] Failed to delete audit progress file: {}", ex.getMessage());
+        }
+        try {
+            Files.deleteIfExists(totalsFile);
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive] Failed to delete audit totals file: {}", ex.getMessage());
+        }
 
         // Drop the populated map for GC. On the 1.1 TB main archive the audit
         // walks ~150M entities; the static reference would otherwise pin the
@@ -258,7 +321,10 @@ public final class AuditDirtyChunks {
         }
     }
 
-    private static Totals auditLevel(ServerLevel level) {
+    private static void auditLevel(
+        ServerLevel level, Totals total, Set<String> completed,
+        Path progressFile, Path totalsFile, Failures failures
+    ) {
         Identifier dim = level.dimension().identifier();
         Path dimPath = level.getServer().storageSource.getDimensionPath(level.dimension());
         String levelId = level.getServer().storageSource.getLevelId();
@@ -268,15 +334,23 @@ public final class AuditDirtyChunks {
         File[] regionFiles = regionFolder.toFile().listFiles((d, n) -> n.endsWith(".mca"));
         if (regionFiles == null) {
             LOGGER.info("[The Archive]   {}: no region/ folder", dim);
-            return dimTotals;
+            return;
         }
         RegionStorageInfo chunkInfo = new RegionStorageInfo(levelId, level.dimension(), "chunk");
         ProgressTracker regionProgress = new ProgressTracker(regionFiles.length);
         for (File f : regionFiles) {
             Matcher m = REGION_FILE_REGEX.matcher(f.getName());
             if (!m.matches()) continue;
-            int xOffset = Integer.parseInt(m.group(1)) << 5;
-            int zOffset = Integer.parseInt(m.group(2)) << 5;
+            int rx = Integer.parseInt(m.group(1));
+            int rz = Integer.parseInt(m.group(2));
+            String key = dim + " region " + rx + " " + rz;
+            if (completed.contains(key)) {
+                regionProgress.regionDone(dim, "region");
+                continue;
+            }
+            int xOffset = rx << 5;
+            int zOffset = rz << 5;
+            Totals regionTotals = new Totals();
             try (RegionFile rf = new RegionFile(chunkInfo, f.toPath(), regionFolder, true)) {
                 for (int x = 0; x < 32; x++) {
                     for (int z = 0; z < 32; z++) {
@@ -284,19 +358,19 @@ public final class AuditDirtyChunks {
                         if (!rf.doesChunkExist(pos)) continue;
                         ChunkAudit a = auditChunk(rf, pos);
                         if (a == null) continue;
-                        dimTotals.chunks++;
-                        dimTotals.blockEntities += a.blockEntityCount;
-                        dimTotals.ghostBes += a.ghostBeCount;
-                        dimTotals.beCoordMismatch += a.beCoordMismatchCount;
-                        dimTotals.beTypeMismatch += a.beTypeMismatchCount;
-                        dimTotals.entities += a.entityCount;
-                        dimTotals.invalidAttrs += a.invalidAttrCount;
-                        if (a.legacy) dimTotals.legacyChunks++;
+                        regionTotals.chunks++;
+                        regionTotals.blockEntities += a.blockEntityCount;
+                        regionTotals.ghostBes += a.ghostBeCount;
+                        regionTotals.beCoordMismatch += a.beCoordMismatchCount;
+                        regionTotals.beTypeMismatch += a.beTypeMismatchCount;
+                        regionTotals.entities += a.entityCount;
+                        regionTotals.invalidAttrs += a.invalidAttrCount;
+                        if (a.legacy) regionTotals.legacyChunks++;
                         switch (a.bakeStatus) {
-                            case COMPLETE -> dimTotals.bakeComplete++;
-                            case PARTIAL -> dimTotals.bakePartial++;
-                            case PENDING -> dimTotals.bakePending++;
-                            case INELIGIBLE -> dimTotals.bakeIneligible++;
+                            case COMPLETE -> regionTotals.bakeComplete++;
+                            case PARTIAL -> regionTotals.bakePartial++;
+                            case PENDING -> regionTotals.bakePending++;
+                            case INELIGIBLE -> regionTotals.bakeIneligible++;
                         }
                         regionProgress.chunkDone();
                     }
@@ -304,6 +378,11 @@ public final class AuditDirtyChunks {
             } catch (IOException ex) {
                 LOGGER.error("[The Archive] Failed to audit {}: {}", f.toPath(), ex.toString());
             }
+            dimTotals.add(regionTotals);
+            total.add(regionTotals);
+            writeTotalsSnapshot(totalsFile, total, failures);
+            appendProgress(progressFile, key);
+            completed.add(key);
             regionProgress.regionDone(dim, "region");
         }
 
@@ -317,8 +396,16 @@ public final class AuditDirtyChunks {
             for (File f : entityFiles) {
                 Matcher m = REGION_FILE_REGEX.matcher(f.getName());
                 if (!m.matches()) continue;
-                int xOffset = Integer.parseInt(m.group(1)) << 5;
-                int zOffset = Integer.parseInt(m.group(2)) << 5;
+                int rx = Integer.parseInt(m.group(1));
+                int rz = Integer.parseInt(m.group(2));
+                String key = dim + " entities " + rx + " " + rz;
+                if (completed.contains(key)) {
+                    entitiesProgress.regionDone(dim, "entities");
+                    continue;
+                }
+                int xOffset = rx << 5;
+                int zOffset = rz << 5;
+                Totals regionTotals = new Totals();
                 try (RegionFile rf = new RegionFile(entitiesInfo, f.toPath(), entitiesFolder, true)) {
                     for (int x = 0; x < 32; x++) {
                         for (int z = 0; z < 32; z++) {
@@ -326,14 +413,19 @@ public final class AuditDirtyChunks {
                             if (!rf.doesChunkExist(pos)) continue;
                             EntityAudit ea = auditEntitiesChunk(rf, pos);
                             if (ea == null) continue;
-                            dimTotals.entities += ea.entityCount;
-                            dimTotals.invalidAttrs += ea.invalidAttrCount;
+                            regionTotals.entities += ea.entityCount;
+                            regionTotals.invalidAttrs += ea.invalidAttrCount;
                             entitiesProgress.chunkDone();
                         }
                     }
                 } catch (IOException ex) {
                     LOGGER.error("[The Archive] Failed to audit entities {}: {}", f.toPath(), ex.toString());
                 }
+                dimTotals.add(regionTotals);
+                total.add(regionTotals);
+                writeTotalsSnapshot(totalsFile, total, failures);
+                appendProgress(progressFile, key);
+                completed.add(key);
                 entitiesProgress.regionDone(dim, "entities");
             }
         }
@@ -351,20 +443,33 @@ public final class AuditDirtyChunks {
             for (File f : poiFiles) {
                 Matcher m = REGION_FILE_REGEX.matcher(f.getName());
                 if (!m.matches()) continue;
-                int xOffset = Integer.parseInt(m.group(1)) << 5;
-                int zOffset = Integer.parseInt(m.group(2)) << 5;
+                int rx = Integer.parseInt(m.group(1));
+                int rz = Integer.parseInt(m.group(2));
+                String key = dim + " poi " + rx + " " + rz;
+                if (completed.contains(key)) {
+                    poiProgress.regionDone(dim, "poi");
+                    continue;
+                }
+                int xOffset = rx << 5;
+                int zOffset = rz << 5;
+                Totals regionTotals = new Totals();
                 try (RegionFile rf = new RegionFile(poiInfo, f.toPath(), poiFolder, true)) {
                     for (int x = 0; x < 32; x++) {
                         for (int z = 0; z < 32; z++) {
                             ChunkPos pos = new ChunkPos(x + xOffset, z + zOffset);
                             if (!rf.doesChunkExist(pos)) continue;
-                            auditPoiChunk(rf, pos, dimTotals);
+                            auditPoiChunk(rf, pos, regionTotals);
                             poiProgress.chunkDone();
                         }
                     }
                 } catch (IOException ex) {
                     LOGGER.error("[The Archive] Failed to audit poi {}: {}", f.toPath(), ex.toString());
                 }
+                dimTotals.add(regionTotals);
+                total.add(regionTotals);
+                writeTotalsSnapshot(totalsFile, total, failures);
+                appendProgress(progressFile, key);
+                completed.add(key);
                 poiProgress.regionDone(dim, "poi");
             }
         }
@@ -375,7 +480,6 @@ public final class AuditDirtyChunks {
                     dimTotals.entities, dimTotals.invalidAttrs, dimTotals.legacyChunks,
                     dimTotals.bakeComplete, dimTotals.bakePartial, dimTotals.bakePending, dimTotals.bakeIneligible,
                     dimTotals.poiValidSections, dimTotals.poiInvalidSections);
-        return dimTotals;
     }
 
     private static void auditPoiChunk(RegionFile rf, ChunkPos pos, Totals totals) {
@@ -721,6 +825,120 @@ public final class AuditDirtyChunks {
             bakeIneligible += other.bakeIneligible;
             poiValidSections += other.poiValidSections;
             poiInvalidSections += other.poiInvalidSections;
+        }
+    }
+
+    private static final class Failures {
+        // Bumped from readProgress when the progress file is present but
+        // Files.readAllLines throws. A non-zero count means resume started
+        // from zero rather than the prior run's checkpoint, so the entire
+        // pass was re-walked.
+        final AtomicLong progressReadFailed = new AtomicLong();
+        // Bumped from writeTotalsSnapshot when the temp-write or atomic-move
+        // throws. A non-zero count means a SIGKILL after that region's
+        // snapshot-attempt and before the next successful snapshot will
+        // leave that region's contribution absent from the resumed totals
+        // even though the region itself was completed; resume re-walks and
+        // re-accrues the region's contribution.
+        final AtomicLong totalsWriteFailed = new AtomicLong();
+    }
+
+    private static Path progressFilePath(MinecraftServer server) {
+        return server.storageSource.getLevelDirectory().path()
+            .resolve(".archive-audit-progress.txt");
+    }
+
+    private static Path totalsFilePath(MinecraftServer server) {
+        return server.storageSource.getLevelDirectory().path()
+            .resolve(".archive-audit-totals.txt");
+    }
+
+    private static Set<String> readProgress(Path path, Failures failures) {
+        if (!Files.exists(path)) return ConcurrentHashMap.newKeySet();
+        try {
+            Set<String> set = ConcurrentHashMap.newKeySet();
+            for (String line : Files.readAllLines(path)) {
+                if (!line.isBlank() && !line.startsWith("#")) set.add(line.trim());
+            }
+            return set;
+        } catch (IOException ex) {
+            LOGGER.error("[The Archive] Failed to read audit progress file {}: {}", path, ex.toString());
+            failures.progressReadFailed.incrementAndGet();
+            return ConcurrentHashMap.newKeySet();
+        }
+    }
+
+    private static synchronized void appendProgress(Path path, String entry) {
+        try {
+            Files.writeString(path, entry + "\n",
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND);
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive] Failed to append audit progress marker {}: {}", entry, ex.toString());
+        }
+    }
+
+    private static synchronized void writeTotalsSnapshot(Path path, Totals totals, Failures failures) {
+        try {
+            Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+            List<String> lines = new ArrayList<>(16);
+            lines.add("chunks=" + totals.chunks);
+            lines.add("blockEntities=" + totals.blockEntities);
+            lines.add("ghostBes=" + totals.ghostBes);
+            lines.add("beCoordMismatch=" + totals.beCoordMismatch);
+            lines.add("beTypeMismatch=" + totals.beTypeMismatch);
+            lines.add("entities=" + totals.entities);
+            lines.add("invalidAttrs=" + totals.invalidAttrs);
+            lines.add("legacyChunks=" + totals.legacyChunks);
+            lines.add("bakeComplete=" + totals.bakeComplete);
+            lines.add("bakePartial=" + totals.bakePartial);
+            lines.add("bakePending=" + totals.bakePending);
+            lines.add("bakeIneligible=" + totals.bakeIneligible);
+            lines.add("poiValidSections=" + totals.poiValidSections);
+            lines.add("poiInvalidSections=" + totals.poiInvalidSections);
+            Files.write(tmp, lines);
+            Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive] Failed to write audit totals snapshot {}: {}", path, ex.toString());
+            failures.totalsWriteFailed.incrementAndGet();
+        }
+    }
+
+    private static Totals readTotalsSnapshot(Path path, Failures failures) {
+        if (!Files.exists(path)) return null;
+        try {
+            Map<String, Long> values = new HashMap<>();
+            for (String line : Files.readAllLines(path)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                int eq = trimmed.indexOf('=');
+                if (eq <= 0) continue;
+                String k = trimmed.substring(0, eq);
+                long v;
+                try { v = Long.parseLong(trimmed.substring(eq + 1)); }
+                catch (NumberFormatException ex) { continue; }
+                values.put(k, v);
+            }
+            Totals t = new Totals();
+            t.chunks            = values.getOrDefault("chunks", 0L);
+            t.blockEntities     = values.getOrDefault("blockEntities", 0L);
+            t.ghostBes          = values.getOrDefault("ghostBes", 0L);
+            t.beCoordMismatch   = values.getOrDefault("beCoordMismatch", 0L);
+            t.beTypeMismatch    = values.getOrDefault("beTypeMismatch", 0L);
+            t.entities          = values.getOrDefault("entities", 0L);
+            t.invalidAttrs      = values.getOrDefault("invalidAttrs", 0L);
+            t.legacyChunks      = values.getOrDefault("legacyChunks", 0L);
+            t.bakeComplete      = values.getOrDefault("bakeComplete", 0L);
+            t.bakePartial       = values.getOrDefault("bakePartial", 0L);
+            t.bakePending       = values.getOrDefault("bakePending", 0L);
+            t.bakeIneligible    = values.getOrDefault("bakeIneligible", 0L);
+            t.poiValidSections  = values.getOrDefault("poiValidSections", 0L);
+            t.poiInvalidSections = values.getOrDefault("poiInvalidSections", 0L);
+            return t;
+        } catch (IOException ex) {
+            LOGGER.error("[The Archive] Failed to read audit totals snapshot {}: {}", path, ex.toString());
+            failures.progressReadFailed.incrementAndGet();
+            return null;
         }
     }
 }

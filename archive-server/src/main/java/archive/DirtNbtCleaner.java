@@ -180,10 +180,11 @@ public final class DirtNbtCleaner {
         long totalsFailed = failures.totalsWriteFailed.get();
         long drainInterrupted = failures.drainInterrupted.get();
         long progressReadFailed = failures.progressReadFailed.get();
+        long rescanDimMissing = failures.rescanDimMissing.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
-            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} totals-write failures, drain-interrupted={}, progress-read-failures={}; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
+            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} totals-write failures, drain-interrupted={}, progress-read-failures={}, rescan-dim-missing={}; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
                          failures.regionCount.get(), failures.chunkCount.get(), progressFailed, totalsFailed,
-                         drainInterrupted, progressReadFailed,
+                         drainInterrupted, progressReadFailed, rescanDimMissing,
                          totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                          totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                          totals.beTypeMismatchStripped.get(),
@@ -217,13 +218,13 @@ public final class DirtNbtCleaner {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete clean totals file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={}, totals-write failures={}, drain-interrupted={}, progress-read-failures={} in {}s. UUID map at exit: {} unique UUIDs.",
+            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={}, totals-write failures={}, drain-interrupted={}, progress-read-failures={}, rescan-dim-missing={} in {}s. UUID map at exit: {} unique UUIDs.",
                         totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                         totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                         totals.beTypeMismatchStripped.get(),
                         totals.uuidDupsStripped.get(), totals.unparseableUuid.get(),
                         totals.legacyChunksSkipped.get(), progressFailed, totalsFailed,
-                        drainInterrupted, progressReadFailed, elapsedSec, uuidMap.size());
+                        drainInterrupted, progressReadFailed, rescanDimMissing, elapsedSec, uuidMap.size());
         }
     }
 
@@ -739,7 +740,9 @@ public final class DirtNbtCleaner {
 
             ServerLevel level = findLevel(server, dimStr);
             if (level == null) {
-                LOGGER.warn("[The Archive] Unknown dimension in clean-progress key, skipping: {}", dimStr);
+                LOGGER.error("[The Archive] Unknown dimension {} in clean-progress key {}; UUIDs from that dim's already-completed regions will not be in the resumed uuidMap. Re-run from a fresh world dir if the level was renamed.",
+                             dimStr, key);
+                failures.rescanDimMissing.incrementAndGet();
                 continue;
             }
             Path dimRoot = server.storageSource.getDimensionPath(level.dimension());
@@ -1050,6 +1053,17 @@ public final class DirtNbtCleaner {
         // A non-zero value means resume started from zero rather than the prior
         // run's checkpoint, so the entire pass was re-walked.
         final AtomicLong progressReadFailed = new AtomicLong();
+        // Rescan-dim-missing counter. Bumped from rescanCompletedRegions when
+        // a completed-region key names a dimension identifier that no longer
+        // resolves to a ServerLevel on this run (operator renamed level-name
+        // or removed a dimension between runs). The UUIDs from that
+        // dimension's already-completed regions never make it into uuidMap on
+        // resume, so the main pass cannot detect duplicates against them; the
+        // operator must re-run from a fresh world dir if the count is
+        // non-zero. The progress file is intentionally not stripped of the
+        // unmatched keys because doing so would silently mask the underlying
+        // configuration error from the next run.
+        final AtomicLong rescanDimMissing = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {

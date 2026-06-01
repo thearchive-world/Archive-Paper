@@ -936,6 +936,17 @@ public final class BakeLightPass {
             return false;
         }
 
+        // Index sections once for O(1) per-record block-state writes. The tail
+        // pass replays one journal record per cross-region write; on a
+        // 7.6M-chunk source the worst-region record count runs into the tens
+        // of thousands and a linear scan of sectionData per record adds up.
+        // Sections are mutated in place by setBlockState, never appended or
+        // removed during the loop, so the map stays valid for the whole pass.
+        Map<Integer, LevelChunkSection> sectionBySectionIndex = new HashMap<>(data.sectionData().size() * 2);
+        for (SerializableChunkData.SectionData sd : data.sectionData()) {
+            sectionBySectionIndex.put(level.getSectionIndexFromSectionY(sd.y()), sd.chunkSection());
+        }
+
         ObjectOpenCustomHashSet<SavedTick<?>> blockDedup = new ObjectOpenCustomHashSet<>(SavedTick.UNIQUE_TICK_HASH);
         blockDedup.addAll(data.packedTicks().blocks());
         ObjectOpenCustomHashSet<SavedTick<?>> fluidDedup = new ObjectOpenCustomHashSet<>(SavedTick.UNIQUE_TICK_HASH);
@@ -998,7 +1009,7 @@ public final class BakeLightPass {
                             failures.crossRegionWritesMissingTarget.incrementAndGet();
                             continue;
                         }
-                        if (applyBlockStateWrite(level, data, rec.blockPos(), state)) {
+                        if (applyBlockStateWrite(level, sectionBySectionIndex, rec.blockPos(), state)) {
                             sectionMutated = true;
                             failures.crossRegionWritesApplied.incrementAndGet();
                         } else {
@@ -1065,20 +1076,20 @@ public final class BakeLightPass {
      * 3x3 working set guarantees this should not happen in practice, but a
      * cross-region target whose region file was concurrently rewritten could
      * surface a hole; treat as missing rather than throwing).
+     *
+     * <p>{@code sectionBySectionIndex} is built once per chunk by
+     * {@link #replayRecordsAtTarget} for O(1) lookup; sections are mutated
+     * in place by {@code setBlockState}, never appended or removed during
+     * the per-record loop, so a single map populated up-front stays valid
+     * for every call.
      */
     private static boolean applyBlockStateWrite(
-        ServerLevel level, SerializableChunkData data, BlockPos pos, BlockState state
+        ServerLevel level, Map<Integer, LevelChunkSection> sectionBySectionIndex, BlockPos pos, BlockState state
     ) {
         int sectionY = pos.getY() >> 4;
         int sectionIndex = level.getSectionIndexFromSectionY(sectionY);
         if (sectionIndex < 0) return false;
-        LevelChunkSection section = null;
-        for (SerializableChunkData.SectionData sd : data.sectionData()) {
-            if (level.getSectionIndexFromSectionY(sd.y()) == sectionIndex) {
-                section = sd.chunkSection();
-                break;
-            }
-        }
+        LevelChunkSection section = sectionBySectionIndex.get(sectionIndex);
         if (section == null) return false;
         section.setBlockState(pos.getX() & 15, pos.getY() & 15, pos.getZ() & 15, state, false);
         return true;
