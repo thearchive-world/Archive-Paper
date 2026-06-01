@@ -466,6 +466,27 @@ public final class DirectNbtUpgrader {
     ) {
         Path mapsDir = server.storageSource.getLevelPath(LevelResource.DATA)
             .resolve("minecraft").resolve("maps");
+
+        // Sweep stale <n>.dat.tmp siblings from prior crashed runs before the
+        // walk. upgradeMapFile's try/catch removes them on a soft throw, but a
+        // JVM kill (SIGKILL, OOM) between writeCompressed and Files.move leaves
+        // the .tmp on disk. Without this sweep they would accumulate run over
+        // run next to the final .dat files. The cleaned count surfaces in the
+        // log so an operator notices the run was previously interrupted.
+        File[] orphans = mapsDir.toFile().listFiles((d, n) -> n.endsWith(".dat.tmp"));
+        if (orphans != null && orphans.length > 0) {
+            int swept = 0;
+            for (File orphan : orphans) {
+                try {
+                    Files.deleteIfExists(orphan.toPath());
+                    swept++;
+                } catch (IOException ex) {
+                    LOGGER.warn("[The Archive] Failed to sweep orphan map tmp {}: {}", orphan.getName(), ex.getMessage());
+                }
+            }
+            LOGGER.info("[The Archive] Map data upgrade: swept {} orphan .tmp file(s) from prior interrupted run", swept);
+        }
+
         File[] files = mapsDir.toFile().listFiles((d, n) -> n.endsWith(".dat"));
         if (files == null || files.length == 0) {
             LOGGER.info("[The Archive] Upgrading map data: no files, skipping");
@@ -560,10 +581,23 @@ public final class DirectNbtUpgrader {
         // Atomic write: NbtIo.writeCompressed truncates the target before streaming
         // gzip; a JVM kill mid-write leaves a stub. Stage to .tmp + ATOMIC_MOVE
         // so the on-disk file is either the pre-DFU original or the fully written
-        // post-DFU version, never partial.
+        // post-DFU version, never partial. The try/catch removes the .tmp on any
+        // failure (out of space, IO error, DFU codec throw) so repeated failed
+        // runs do not accumulate orphan .tmp siblings next to the maps/ files;
+        // a JVM kill mid-write still leaves a .tmp on disk, which the startup
+        // scan in processMapData cleans on the next pass.
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
-        NbtIo.writeCompressed(fixed, tmp);
-        Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        try {
+            NbtIo.writeCompressed(fixed, tmp);
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException | RuntimeException ex) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException suppressed) {
+                ex.addSuppressed(suppressed);
+            }
+            throw ex;
+        }
         return true;
     }
 

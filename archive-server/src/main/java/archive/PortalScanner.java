@@ -93,15 +93,11 @@ public class PortalScanner {
                 }
             }
 
-            final int chunkX = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionX(key);
-            final int chunkY = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionY(key);
-            final int chunkZ = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkSectionZ(key);
-
-            ChunkAccess chunk = level.getChunk(chunkX, chunkZ, ChunkStatus.EMPTY);
+            ChunkAccess chunk = level.getChunk(sectionX, sectionZ, ChunkStatus.EMPTY);
             if (chunk instanceof EmptyLevelChunk) continue;
-            LevelChunkSection section = chunk.getSection(chunk.getSectionIndexFromSectionY(chunkY));
+            LevelChunkSection section = chunk.getSection(chunk.getSectionIndexFromSectionY(sectionY));
             if (section == null) continue;
-            List<BlockPos> portals = PortalScanner.findPortalBlockPositionsInSection(chunkX << 4, chunkY << 4, chunkZ << 4, section);
+            List<BlockPos> portals = PortalScanner.findPortalBlockPositionsInSection(sectionX << 4, sectionY << 4, sectionZ << 4, section);
             if (portals.isEmpty()) continue;
 
             for (BlockPos portal : portals) {

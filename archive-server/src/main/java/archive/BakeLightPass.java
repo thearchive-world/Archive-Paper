@@ -505,6 +505,14 @@ public final class BakeLightPass {
                     failures.recordChunk(chunkKey);
                     perChunkFailures++;
                 }
+                // Drop the reconstructed ProtoChunk reference after the final
+                // write. The cache lives for the rest of the per-region loop
+                // (subsequent entries' writeChunk + journal fsync); without
+                // this release, every already-written entry's ProtoChunk
+                // wrapper pins its UpgradeData / ProtoChunkTicks until cache
+                // scope exits. The underlying PalettedContainer sections live
+                // on entry.data and are unaffected.
+                entry.releaseProtoChunk();
             }
             // Snapshot AFTER writeback. The accessor's counter accumulates from
             // both the non-owned BE-index journal loop above and any
@@ -1260,6 +1268,26 @@ public final class BakeLightPass {
             }
             routeFluidTick(level, cache, journal, dim, tick, failures);
         }
+        // Clear the source UpgradeData's in-memory neighbor-tick lists so the
+        // outer write-back (mergeBaked -> stripUpgradeData) does not re-emit
+        // them when the chunk is rewritten with isLightOn=true. The clear sits
+        // BEFORE the caller's bakeChunkLight + entry.dirty=true. Failure path:
+        // if bakeChunkLight throws before entry.dirty is set, the chunk is NOT
+        // rewritten, so the on-disk UpgradeData retains its original ticks.
+        // The journal entries already appended above persist (they are written
+        // through the per-worker journal stream). On resume the source chunk
+        // is re-loaded from disk, replayNeighborTicks runs again, and the same
+        // ticks are routed again. The intra-region path appends to the target
+        // CachedChunk's pendingBlockTicks/pendingFluidTicks which are themselves
+        // dedup'd via {@link SavedTick#UNIQUE_TICK_HASH} (see flushPendingTicks
+        // in flushPendingTicksInto). The cross-region path appends to
+        // the journal verbatim; the tail pass dedups on apply using the same
+        // UNIQUE_TICK_HASH (see {@link BakeLightJournal} tail-apply). The net
+        // effect is at-least-once journal emission, exactly-once on-disk apply.
+        // Re-ordering the clear AFTER write-back would tighten the in-memory
+        // path but would NOT remove the resume duplicate-emission case (the
+        // on-disk UpgradeData is what matters for resume), so the dedup gate
+        // remains load-bearing either way.
         blockTicks.clear();
         fluidTicks.clear();
     }
@@ -1841,6 +1869,10 @@ public final class BakeLightPass {
             pc.setPersistedStatus(data.chunkStatus());
             protoChunk = pc;
             return pc;
+        }
+
+        void releaseProtoChunk() {
+            protoChunk = null;
         }
 
         private void ensureSectionArray(final ServerLevel level) {

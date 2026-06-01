@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
@@ -131,6 +132,31 @@ public final class AuditDirtyChunks {
         uuidCounts = new ConcurrentHashMap<>();
         Totals total = new Totals();
 
+        // Starlight light-version guardrail. The audit's bake-complete vs
+        // bake-pending classification compares the per-chunk
+        // starlight.light_version against SaveUtil.STARLIGHT_LIGHT_VERSION.
+        // moonrise bumps that constant whenever its serialization shape
+        // changes; on the first audit after such a bump every previously-baked
+        // chunk audits as bake-pending and --bakeLight will redo the world for
+        // no reason except the version-tag mismatch. The bake itself follows
+        // moonrise correctly; this guardrail surfaces the bump so the operator
+        // is not surprised by the re-bake. Persisted at world root next to the
+        // other pipeline state files (.archive-upgrade-progress.txt,
+        // .archive-clean-totals.txt, .archive-bakelight-progress.txt,
+        // .archive-bakelight-tail-progress.txt).
+        int currentStarlightVersion = SaveUtil.STARLIGHT_LIGHT_VERSION;
+        Path starlightVersionFile = starlightVersionFilePath(server);
+        Integer priorStarlightVersion = readStarlightVersion(starlightVersionFile);
+        if (priorStarlightVersion == null) {
+            LOGGER.info("[The Archive] Starlight version {} at audit start (no prior record; will write {} at audit end)",
+                        currentStarlightVersion, starlightVersionFile.getFileName());
+        } else if (priorStarlightVersion != currentStarlightVersion) {
+            LOGGER.warn("[The Archive] Starlight version changed {} -> {} since the last audit; previously-baked chunks will audit as bake-pending until --bakeLight is re-run",
+                        priorStarlightVersion, currentStarlightVersion);
+        } else {
+            LOGGER.info("[The Archive] Starlight version {} at audit start (matches prior record)", currentStarlightVersion);
+        }
+
         // The audit walk is pure RegionFile NBT decode (IO-bound, no chunk-system
         // state). On a 12k-region world the synchronous walk blew past Paper's
         // 60s watchdog. Run
@@ -177,6 +203,13 @@ public final class AuditDirtyChunks {
             Thread.currentThread().interrupt();
         }
 
+        // Persist the version we just audited against. Writes unconditionally
+        // post-walk: a worker crash here is already louder (LOGGER.error
+        // "Audit worker failed") than a single missing WARN on the next run,
+        // and the simpler write-always semantics avoid a parallel success flag
+        // for a one-time observability case.
+        writeStarlightVersion(starlightVersionFile, currentStarlightVersion);
+
         long elapsedSec = (System.currentTimeMillis() - start) / 1000;
         long uuidDups = uuidCounts.values().stream()
             .mapToLong(c -> c.get() - 1)
@@ -188,6 +221,41 @@ public final class AuditDirtyChunks {
                     total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
                     total.bakeComplete, total.bakePartial, total.bakePending, total.bakeIneligible,
                     total.poiValidSections, total.poiInvalidSections, elapsedSec);
+
+        // Drop the populated map for GC. On the 1.1 TB main archive the audit
+        // walks ~150M entities; the static reference would otherwise pin the
+        // whole map for the JVM's lifetime after the pass returns. Reassigning
+        // to an empty map (not null) keeps the field non-null so concurrent
+        // accidental reads cannot NPE.
+        uuidCounts = new ConcurrentHashMap<>();
+    }
+
+    private static Path starlightVersionFilePath(MinecraftServer server) {
+        return server.storageSource.getLevelDirectory().path()
+            .resolve(".archive-audit-starlight-version.txt");
+    }
+
+    private static Integer readStarlightVersion(Path path) {
+        if (!Files.exists(path)) return null;
+        try {
+            for (String line : Files.readAllLines(path)) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                return Integer.parseInt(trimmed);
+            }
+            return null;
+        } catch (IOException | NumberFormatException ex) {
+            LOGGER.warn("[The Archive] Failed to read starlight-version file {}: {}", path, ex.getMessage());
+            return null;
+        }
+    }
+
+    private static void writeStarlightVersion(Path path, int version) {
+        try {
+            Files.writeString(path, version + "\n");
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive] Failed to write starlight-version file {}: {}", path, ex.getMessage());
+        }
     }
 
     private static Totals auditLevel(ServerLevel level) {
