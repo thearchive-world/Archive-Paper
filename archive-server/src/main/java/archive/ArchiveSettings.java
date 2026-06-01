@@ -21,6 +21,7 @@ public final class ArchiveSettings {
         warnIfUpgradeChunksWedge(options);
         warnIfForceUpgradeAndUpgradeChunks(options);
         warnIfPreserveTimestampsWithoutWritePass(options);
+        warnIfMultiplePostSpinPassesSelected(options);
     }
 
     private static void warnIfWedgeCombo(OptionSet options) {
@@ -53,6 +54,17 @@ public final class ArchiveSettings {
         if (!preserveChunkTimestamps) return;
         if (options.has("upgradeChunks") || options.has("cleanDirtyChunks") || options.has("bakeLight")) return;
         LOGGER.warn("[The Archive] --preserveChunkTimestamps without --upgradeChunks/--cleanDirtyChunks/--bakeLight will freeze region-file slot timestamps on every chunk write for the JVM lifetime. Only set this flag on archive-pipeline invocations.");
+    }
+
+    private static void warnIfMultiplePostSpinPassesSelected(OptionSet options) {
+        java.util.ArrayList<String> selected = new java.util.ArrayList<>(4);
+        if (upgradeChunksRequested()) selected.add("--upgradeChunks");
+        if (cleanDirtyChunks()) selected.add("--cleanDirtyChunks");
+        if (bakeLight()) selected.add("--bakeLight");
+        if (auditDirtyChunks()) selected.add("--auditDirtyChunks");
+        if (selected.size() < 2) return;
+        LOGGER.warn("[The Archive] Multiple post-spin pipeline flags requested: {}. The dispatcher runs at most one pass per invocation in order upgrade -> clean -> bake -> audit. This run will execute {}; re-invoke with the remaining flag(s) after it completes.",
+                String.join(", ", selected), selected.get(0));
     }
 
     private static boolean archiveDisableSavingValue(OptionSet o) {
@@ -99,7 +111,14 @@ public final class ArchiveSettings {
             return Math.min(Runtime.getRuntime().availableProcessors(), 16);
         }
         Object v = o.valueOf("upgradeWorkerCount");
-        if (v instanceof Integer i && i > 0) return i;
+        if (v instanceof Integer i && i > 0) {
+            int cap = Runtime.getRuntime().availableProcessors() * 4;
+            if (i > cap) {
+                LOGGER.warn("[The Archive] --upgradeWorkerCount={} exceeds the cap (availableProcessors * 4 = {}); clamping to {}.", i, cap, cap);
+                return cap;
+            }
+            return i;
+        }
         return Math.min(Runtime.getRuntime().availableProcessors(), 16);
     }
 

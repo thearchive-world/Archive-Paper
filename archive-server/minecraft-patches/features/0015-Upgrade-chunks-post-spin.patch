@@ -5,9 +5,10 @@ Subject: [PATCH] Upgrade chunks post-spin
 
 After initServer has returned and one-tick init tasks have run, but
 before the main tick loop opens, dispatch any of --upgradeChunks,
---cleanDirtyChunks, or --auditDirtyChunks. Each pass
-runs its work post-spin, marks its phase complete where applicable,
-and halts the server cleanly. The upgrade backend is parallel
+--cleanDirtyChunks, --bakeLight, or --auditDirtyChunks. The dispatcher
+runs at most one pass per invocation, in the order
+upgrade -> clean -> bake -> audit; each pass marks its phase complete
+where applicable, and halts the server cleanly. The upgrade backend is parallel
 direct-NBT (DirectNbtUpgrader): workers each own one region file and
 DFU chunk NBT in place via SimpleRegionStorage.upgradeChunkTag, with
 no chunk-system involvement. See docs/upgrade-pipeline-design.md for
@@ -21,13 +22,15 @@ index cc35c6271c98615a486422d0490145227626bd85..0728cd0c562c2dedaebe86678c6c33b1
                  CompletableFuture.runAsync(com.destroystokyo.paper.PaperVersionFetcher::getUpdateStatusStartupMessage, io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR);
              }
              // Paper end - Improve outdated version checking
-+            // The Archive start - audit dirty chunks post-spin (read-only, runs first so audit + upgrade in two invocations)
-+            if (archive.ArchiveSettings.auditDirtyChunks()) {
-+                archive.AuditDirtyChunks.run(this);
++            // The Archive start - upgrade chunks post-spin (first in dispatch; runs the pre-26.1 direct-NBT chunk upgrade pass)
++            if (archive.ArchiveSettings.upgradeChunksRequested()
++                    && !archive.ArchiveSettings.upgradeChunksComplete()) {
++                archive.ChunkUpgrader.run(this);
++                archive.ArchiveSettings.markUpgradeChunksComplete();
 +                this.halt(false);
 +                return;
 +            }
-+            // The Archive end - audit dirty chunks post-spin
++            // The Archive end - upgrade chunks post-spin
 +            // The Archive start - clean dirty chunks post-spin (post-pass for --upgradeChunks)
 +            if (archive.ArchiveSettings.cleanDirtyChunks()) {
 +                archive.DirtNbtCleaner.run(this);
@@ -42,15 +45,13 @@ index cc35c6271c98615a486422d0490145227626bd85..0728cd0c562c2dedaebe86678c6c33b1
 +                return;
 +            }
 +            // The Archive end - bake light post-spin
-+            // The Archive start - upgrade chunks post-spin
-+            if (archive.ArchiveSettings.upgradeChunksRequested()
-+                    && !archive.ArchiveSettings.upgradeChunksComplete()) {
-+                archive.ChunkUpgrader.run(this);
-+                archive.ArchiveSettings.markUpgradeChunksComplete();
++            // The Archive start - audit dirty chunks post-spin (read-only verification; last in dispatch)
++            if (archive.ArchiveSettings.auditDirtyChunks()) {
++                archive.AuditDirtyChunks.run(this);
 +                this.halt(false);
 +                return;
 +            }
-+            // The Archive end - upgrade chunks post-spin
++            // The Archive end - audit dirty chunks post-spin
  
              while (this.running) {
                  final long tickStart = System.nanoTime(); // Paper - improve tick loop

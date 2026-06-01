@@ -16,12 +16,3 @@ index 3bb9b58ee97464687e348e23b99159226415c267..77660ed6439e521d2b3d6acffd1e9eae
          final RegionDataController taskController = getControllerFor(world, type);
  
          final boolean[] created = new boolean[1];
-@@ -878,7 +879,7 @@ public final class MoonriseRegionFileIO {
-             throw new IOException(ex);
-         }
-     }
--    
-+
-     private static final class CancellableRead implements Cancellable {
- 
-         private BiConsumer<CompoundTag, Throwable> callback;
