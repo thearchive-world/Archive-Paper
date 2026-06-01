@@ -157,8 +157,8 @@ public final class BakeLightPass {
         long progressReadFailed = failures.progressReadFailed.get();
         long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
-            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} tail-pass-chunks-skipped, {} progress-marker IO failures, progress-read-failures={}, {} getChunk-stub-calls, {} chunks walked in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, failures.tailPassChunksSkipped.get(), progressFailed, progressReadFailed, failures.getChunkStubCalls.get(), totalChunks, elapsedSec);
+            LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} tail-pass-chunks-skipped, {} progress-marker IO failures, progress-read-failures={}, {} chunks walked in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, failures.tailPassChunksSkipped.get(), progressFailed, progressReadFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
                 LOGGER.error("[The Archive]   failed region: {}", key);
             }
@@ -191,7 +191,7 @@ public final class BakeLightPass {
                 LOGGER.warn("[The Archive] Failed to delete progress file: {}", ex.getMessage());
             }
             LOGGER.info(
-                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, tail-pass-chunks-skipped={}, border-load failures={}, progress-marker IO failures={}, progress-read-failures={}, getChunk-stub-calls={} in {}s",
+                "[The Archive] Bake-light complete: {} chunks parsed, {} baked, ticks replayed={} (dropped: distance={} missing={} dedup={}), cross-region writes journaled={} applied={} (dropped: missing-target={} io-failed={}, partial-decoded properties={}, journal-read malformed={}), tail-pass malformed={}, tail-pass-chunks-skipped={}, border-load failures={}, progress-marker IO failures={}, progress-read-failures={} in {}s",
                 totalChunks, failures.chunksBaked.get(),
                 failures.ticksReplayed.get(),
                 failures.ticksDroppedDistanceFilter.get(),
@@ -208,7 +208,6 @@ public final class BakeLightPass {
                 borderLoadFail,
                 progressFailed,
                 progressReadFailed,
-                failures.getChunkStubCalls.get(),
                 elapsedSec);
         }
     }
@@ -518,7 +517,6 @@ public final class BakeLightPass {
             // the fsync so the metrics survive an fsync throw.
             failures.crossRegionWritesJournaled.addAndGet(accessor.crossRegionWritesJournaled.get());
             failures.crossRegionWritesIoFailed.addAndGet(accessor.crossRegionWritesIoFailed.get());
-            failures.getChunkStubCalls.addAndGet(accessor.getChunkCalls.get());
 
             try {
                 journal.fsync();
@@ -1964,12 +1962,6 @@ public final class BakeLightPass {
         final AtomicLong crossRegionWritesMissingTarget = new AtomicLong();
         final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
         final AtomicLong crossRegionWritesApplied = new AtomicLong();
-        // Aggregated counter for BakeLevelAccessor.getChunk /
-        // getChunkIfLoadedImmediately stub-null returns across all workers.
-        // Production runs report zero; non-zero surfaces a previously-silent
-        // vanilla call path that landed on the stub instead of a real chunk.
-        // Observability only; does not trigger the FAILED branch.
-        final AtomicLong getChunkStubCalls = new AtomicLong();
         // Per-record partial-decode counter for the block-state journal payload.
         // Bumped once per property whose name no longer exists on the reader's
         // block definition or whose string value fails to round-trip via the

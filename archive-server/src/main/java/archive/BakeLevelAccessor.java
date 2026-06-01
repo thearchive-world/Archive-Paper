@@ -111,12 +111,6 @@ final class BakeLevelAccessor implements LevelAccessor {
 
     final AtomicLong crossRegionWritesJournaled = new AtomicLong();
     final AtomicLong crossRegionWritesIoFailed = new AtomicLong();
-    // Counter for getChunk / getChunkIfLoadedImmediately stub-null returns.
-    // Zero on every observed run today; non-zero surfaces a new vanilla code
-    // path that hit the stub and got a silent null instead of a real chunk,
-    // which can quietly produce wrong-shape state. Observability only; does
-    // not gate the FAILED branch or progress-file retention.
-    final AtomicLong getChunkCalls = new AtomicLong();
     // First-occurrence flag for setBlock journal IOException logging.
     // The counter still bumps on every failure and the progress-file gate
     // still fires; this flag throttles the ERROR-level log to once per
@@ -349,15 +343,11 @@ final class BakeLevelAccessor implements LevelAccessor {
         // BlockBehaviour.updateShape never calls this in practice for the
         // UpgradeData walk; defensive null return rather than throw so any
         // surprise call path on a non-existent neighbour quietly degrades.
-        // The counter surfaces any such surprise call path in the pass-end
-        // summary so silent wrong-shape state cannot accumulate undetected.
-        this.getChunkCalls.incrementAndGet();
         return null;
     }
 
     @Override
     public @Nullable ChunkAccess getChunkIfLoadedImmediately(final int chunkX, final int chunkZ) {
-        this.getChunkCalls.incrementAndGet();
         return null;
     }
 
