@@ -8,8 +8,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -145,13 +148,24 @@ public final class DirtNbtCleaner {
 
         Failures failures = new Failures();
         Totals totals = new Totals();
+        Path totalsPath = totalsFilePath(server);
+        Map<String, Long> priorTotals = readTotals(totalsPath);
+        if (!priorTotals.isEmpty()) {
+            totals.loadAdd(priorTotals);
+            LOGGER.info("[The Archive] Loaded prior clean totals: rewrote={}, invalid-attrs={}, ghost-bes={}, be-coord-mismatch={}, be-type-mismatch={}, uuid-dups={}, unparseable-uuid={}, legacy-chunks-skipped={}",
+                        totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
+                        totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
+                        totals.beTypeMismatchStripped.get(),
+                        totals.uuidDupsStripped.get(), totals.unparseableUuid.get(),
+                        totals.legacyChunksSkipped.get());
+        }
         ExecutorService pool = Executors.newFixedThreadPool(threadCount,
             new ThreadFactoryBuilder().setNameFormat("archive-clean-%d").setDaemon(true).build());
 
         try {
             rescanCompletedRegions(server, pool, completed, failures);
             for (ServerLevel level : server.getAllLevels()) {
-                processLevel(server, level, pool, completed, progressFile, failures, totals);
+                processLevel(server, level, pool, completed, progressFile, totalsPath, failures, totals);
             }
         } finally {
             pool.shutdown();
@@ -160,9 +174,10 @@ public final class DirtNbtCleaner {
 
         long elapsedSec = (System.currentTimeMillis() - startMillis) / 1000;
         long progressFailed = failures.progressAppendFailed.get();
+        long totalsFailed = failures.totalsWriteFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
-            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
-                         failures.regionCount.get(), failures.chunkCount.get(), progressFailed,
+            LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} totals-write failures; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
+                         failures.regionCount.get(), failures.chunkCount.get(), progressFailed, totalsFailed,
                          totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                          totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                          totals.beTypeMismatchStripped.get(),
@@ -191,18 +206,23 @@ public final class DirtNbtCleaner {
             } catch (IOException ex) {
                 LOGGER.warn("[The Archive] Failed to delete clean progress file: {}", ex.getMessage());
             }
-            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={} in {}s. UUID map at exit: {} unique UUIDs.",
+            try {
+                Files.deleteIfExists(totalsPath);
+            } catch (IOException ex) {
+                LOGGER.warn("[The Archive] Failed to delete clean totals file: {}", ex.getMessage());
+            }
+            LOGGER.info("[The Archive] Dirty-chunk clean complete: rewrote {} chunks, stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid, skipped {} legacy chunks, progress-marker IO failures={}, totals-write failures={} in {}s. UUID map at exit: {} unique UUIDs.",
                         totals.chunksRewritten.get(), totals.invalidAttrsStripped.get(),
                         totals.ghostBesStripped.get(), totals.beCoordMismatchStripped.get(),
                         totals.beTypeMismatchStripped.get(),
                         totals.uuidDupsStripped.get(), totals.unparseableUuid.get(),
-                        totals.legacyChunksSkipped.get(), progressFailed, elapsedSec, uuidMap.size());
+                        totals.legacyChunksSkipped.get(), progressFailed, totalsFailed, elapsedSec, uuidMap.size());
         }
     }
 
     private static void processLevel(
         MinecraftServer server, ServerLevel level, ExecutorService pool,
-        Set<String> completed, Path progressFile, Failures failures, Totals totals
+        Set<String> completed, Path progressFile, Path totalsPath, Failures failures, Totals totals
     ) {
         Identifier dim = level.dimension().identifier();
         Path dimRoot = server.storageSource.getDimensionPath(level.dimension());
@@ -210,11 +230,11 @@ public final class DirtNbtCleaner {
 
         // region/ pass: strips invalid-attrs from embedded "entities" (lowercase)
         // AND strips ghost-bes from block_entities.
-        processFolder(server, level, pool, completed, progressFile, failures, totals,
+        processFolder(server, level, pool, completed, progressFile, totalsPath, failures, totals,
             dim, dimRoot, levelId, "region", "chunk", FolderKind.REGION);
         // entities/ pass: strips invalid-attrs from split "Entities" (capital).
         // Absent on chunks that have not been split yet; absence is not an error.
-        processFolder(server, level, pool, completed, progressFile, failures, totals,
+        processFolder(server, level, pool, completed, progressFile, totalsPath, failures, totals,
             dim, dimRoot, levelId, "entities", "entities", FolderKind.ENTITIES);
 
         // Belt-and-suspenders flush of Paper's chunk-system IO worker pool for the
@@ -231,7 +251,7 @@ public final class DirtNbtCleaner {
 
     private static void processFolder(
         MinecraftServer server, ServerLevel level, ExecutorService pool,
-        Set<String> completed, Path progressFile, Failures failures, Totals totals,
+        Set<String> completed, Path progressFile, Path totalsPath, Failures failures, Totals totals,
         Identifier dim, Path dimRoot, String levelId,
         String folderName, String storageTypeToken, FolderKind kind
     ) {
@@ -242,6 +262,17 @@ public final class DirtNbtCleaner {
                         dim, folderName);
             return;
         }
+        // Deterministic dispatch order. FS iteration order from listFiles is not
+        // stable across runs (or across filesystems), and the cleaner's UUID
+        // dedup is first-occurrence-wins via uuidMap.putIfAbsent. Without a
+        // stable order, which-ChunkPos-wins-which-UUID is FS-iteration-dependent
+        // and the chosen survivor varies run-to-run on identical input. Sort by
+        // filename so dispatch order is byte-stable; the worker pool still
+        // races on completion, but the submit-order bias is enough on every
+        // observed fixture for the count- and identity-level invariants to hold
+        // across reruns. Mirrors commit 64a7bc0 (bake journalFiles
+        // sort) for the same determinism reason.
+        Arrays.sort(files, Comparator.comparing(File::getName));
         LOGGER.info("[The Archive] Cleaning dimension {} ({}): {} region files queued",
                     dim, folderName, files.length);
 
@@ -282,6 +313,15 @@ public final class DirtNbtCleaner {
                     // clean-only walk on the rest. The retry surfaces persistent
                     // corruption as a stable signal instead of a hidden no-op.
                     if (result.perChunkFailures() == 0) {
+                        // Totals snapshot BEFORE progress append: a SIGKILL between
+                        // these two writes leaves totals capturing this region's
+                        // contribution but the region absent from progress, so
+                        // resume re-walks it and strips zero (chunks already
+                        // cleaned on disk). The reverse order would mark the
+                        // region done while losing its totals contribution, so
+                        // resume would skip it and the resumed-run summary would
+                        // undercount by this region's strips.
+                        writeTotalsSnapshot(totalsPath, totals, failures);
                         appendProgress(progressFile, key, failures);
                     }
                     long now = System.currentTimeMillis();
@@ -640,7 +680,13 @@ public final class DirtNbtCleaner {
         AtomicLong rescanned = new AtomicLong();
         List<SubmittedRegion> futures = new ArrayList<>(completed.size());
 
-        for (String key : completed) {
+        // Sort the completed set so resume re-populates uuidMap in the same
+        // order processFolder dispatches the main pass. completed is a Set,
+        // whose iteration order is undefined; without sorting, the resumed
+        // run's UUID-survivor identity could differ from the pre-kill run's.
+        List<String> orderedCompleted = new ArrayList<>(completed);
+        orderedCompleted.sort(String::compareTo);
+        for (String key : orderedCompleted) {
             // Key shape: "<dim> <folder> <rx> <rz>"; see appendProgress in
             // processFolder.
             String[] parts = key.split(" ");
@@ -819,6 +865,66 @@ public final class DirtNbtCleaner {
         }
     }
 
+    private static Path totalsFilePath(MinecraftServer server) {
+        return server.storageSource.getLevelDirectory().path()
+            .resolve(".archive-clean-totals.txt");
+    }
+
+    /**
+     * Read the persisted Totals snapshot from a prior run. Returns an empty
+     * map if the file is absent or unreadable; resume then starts from zero
+     * and the resumed run's summary line under-reports the prior run's
+     * already-finished work by exactly the lost snapshot. Tolerated rather
+     * than failing the pass because a missing/malformed totals file does not
+     * compromise correctness of the dirt strip itself; the strip results are
+     * on disk in the .mca files, only the cross-run summary is degraded.
+     */
+    private static Map<String, Long> readTotals(Path path) {
+        if (!Files.exists(path)) return Map.of();
+        try {
+            Map<String, Long> map = new HashMap<>();
+            for (String line : Files.readAllLines(path)) {
+                if (line.isBlank() || line.startsWith("#")) continue;
+                int eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                String key = line.substring(0, eq).trim();
+                String value = line.substring(eq + 1).trim();
+                try {
+                    map.put(key, Long.parseLong(value));
+                } catch (NumberFormatException ex) {
+                    LOGGER.warn("[The Archive] Skipping malformed clean-totals entry: {}", line);
+                }
+            }
+            return map;
+        } catch (IOException ex) {
+            LOGGER.warn("[The Archive] Failed to read clean totals file, starting fresh: {}", ex.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
+     * Rewrite the full Totals snapshot atomically. Writes to a sibling temp
+     * file with SYNC, then atomic-moves into place; a SIGKILL between the
+     * write and the move leaves the previous snapshot intact, a SIGKILL after
+     * the move loses zero state. Synchronized because multiple workers may
+     * finish their region concurrently and each calls this. Caller must
+     * invoke BEFORE appendProgress in the submit lambda: if progress is
+     * appended before totals are snapshotted and a SIGKILL strikes between,
+     * the region is marked done but its strip contributions never accrue,
+     * leaving the resumed-run summary undercount the missing region's strips.
+     */
+    private static synchronized void writeTotalsSnapshot(Path path, Totals totals, Failures failures) {
+        Path tmp = path.resolveSibling(path.getFileName().toString() + ".tmp");
+        try {
+            Files.writeString(tmp, String.join("\n", totals.toLines()) + "\n",
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.SYNC);
+            Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException ex) {
+            LOGGER.error("[The Archive] Failed to write clean totals snapshot: {}", ex.getMessage());
+            failures.totalsWriteFailed.incrementAndGet();
+        }
+    }
+
     private static void awaitWithWatchdogTicks(ExecutorService pool, Failures failures) {
         long deadline = System.currentTimeMillis() + FINAL_DRAIN_TIMEOUT_MILLIS;
         try {
@@ -856,6 +962,14 @@ public final class DirtNbtCleaner {
         // not; a non-zero count after the pass means a SIGKILL+restart will
         // redo every region whose marker never landed.
         final AtomicLong progressAppendFailed = new AtomicLong();
+        // Totals-snapshot write failure counter. Bumped from
+        // writeTotalsSnapshot when the temp-write or atomic-move throws. A
+        // non-zero count means a SIGKILL after that region's strip and before
+        // the next successful snapshot will leave that region's contribution
+        // unrecoverable in the resume totals (the region will be re-walked
+        // because progress wasn't appended, but its strips will accrue zero
+        // since the disk is already clean).
+        final AtomicLong totalsWriteFailed = new AtomicLong();
 
         void recordRegion(String key) {
             if (regions.add(key)) {
@@ -880,6 +994,30 @@ public final class DirtNbtCleaner {
         final AtomicLong uuidDupsStripped = new AtomicLong();
         final AtomicLong unparseableUuid = new AtomicLong();
         final AtomicLong legacyChunksSkipped = new AtomicLong();
+
+        List<String> toLines() {
+            List<String> out = new ArrayList<>(8);
+            out.add("chunksRewritten=" + chunksRewritten.get());
+            out.add("invalidAttrsStripped=" + invalidAttrsStripped.get());
+            out.add("ghostBesStripped=" + ghostBesStripped.get());
+            out.add("beCoordMismatchStripped=" + beCoordMismatchStripped.get());
+            out.add("beTypeMismatchStripped=" + beTypeMismatchStripped.get());
+            out.add("uuidDupsStripped=" + uuidDupsStripped.get());
+            out.add("unparseableUuid=" + unparseableUuid.get());
+            out.add("legacyChunksSkipped=" + legacyChunksSkipped.get());
+            return out;
+        }
+
+        void loadAdd(Map<String, Long> values) {
+            chunksRewritten.addAndGet(values.getOrDefault("chunksRewritten", 0L));
+            invalidAttrsStripped.addAndGet(values.getOrDefault("invalidAttrsStripped", 0L));
+            ghostBesStripped.addAndGet(values.getOrDefault("ghostBesStripped", 0L));
+            beCoordMismatchStripped.addAndGet(values.getOrDefault("beCoordMismatchStripped", 0L));
+            beTypeMismatchStripped.addAndGet(values.getOrDefault("beTypeMismatchStripped", 0L));
+            uuidDupsStripped.addAndGet(values.getOrDefault("uuidDupsStripped", 0L));
+            unparseableUuid.addAndGet(values.getOrDefault("unparseableUuid", 0L));
+            legacyChunksSkipped.addAndGet(values.getOrDefault("legacyChunksSkipped", 0L));
+        }
     }
 
 }
