@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,13 +26,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import net.minecraft.core.UUIDUtil;
-import net.minecraft.core.registries.BuiltInRegistries;
+import archive.UuidDecoder.UuidResult;
+import archive.UuidDecoder.UuidStatus;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.IntArrayTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
-import net.minecraft.nbt.Tag;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -102,7 +99,6 @@ public final class DirtNbtCleaner {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Pattern REGION_FILE_REGEX =
         Pattern.compile("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$");
-    private static final String AIR = "minecraft:air";
     // Mirrors DirectNbtUpgrader's bounds. Cleaner workload is read+mutate+write
     // like upgrader, not the read-only audit walk; same shape applies.
     private static final long PER_REGION_TIMEOUT_MILLIS = 30L * 60 * 1000;
@@ -133,8 +129,8 @@ public final class DirtNbtCleaner {
     public static void run(MinecraftServer server) {
         long startMillis = System.currentTimeMillis();
         int threadCount = ArchiveSettings.upgradeWorkerCount();
-        blocksWithEntity = computeBlocksWithEntity();
-        beIdToBlocks = computeBeIdToBlocks();
+        blocksWithEntity = BlockEntityRegistry.computeBlocksWithEntity();
+        beIdToBlocks = BlockEntityRegistry.computeBeIdToBlocks();
         uuidMap = new ConcurrentHashMap<>();
         // Downstream smoke tooling greps "Starting dirty-chunk clean" / "Dirty-chunk clean complete";
         // keep both in sync when changing.
@@ -232,16 +228,6 @@ public final class DirtNbtCleaner {
     }
 
     private enum FolderKind { REGION, ENTITIES }
-
-    private enum UuidStatus { ABSENT, PRESENT_PARSED, PRESENT_MALFORMED }
-
-    private record UuidResult(UuidStatus status, UUID uuid) {
-        static final UuidResult ABSENT = new UuidResult(UuidStatus.ABSENT, null);
-        static final UuidResult MALFORMED = new UuidResult(UuidStatus.PRESENT_MALFORMED, null);
-        static UuidResult parsed(UUID uuid) {
-            return new UuidResult(UuidStatus.PRESENT_PARSED, uuid);
-        }
-    }
 
     private static void processFolder(
         MinecraftServer server, ServerLevel level, ExecutorService pool,
@@ -441,7 +427,7 @@ public final class DirtNbtCleaner {
                 // (vanilla will reject on load; we don't have a better answer
                 // than "leave them alone"). Status-ABSENT silently keeps
                 // (vanilla assigns at load time).
-                UuidResult r = decodeUuid(entity);
+                UuidResult r = UuidDecoder.decodeUuid(entity);
                 if (r.status() == UuidStatus.PRESENT_PARSED) {
                     ChunkPos existing = uuidMap.putIfAbsent(r.uuid(), pos);
                     if (existing != null) {
@@ -454,7 +440,7 @@ public final class DirtNbtCleaner {
                     // Fall through: keep the entry.
                 }
 
-                if (entityHasInvalidAttribute(entity)) {
+                if (AttributeValidator.entityHasInvalidAttribute(entity)) {
                     entity.remove("attributes");
                     invalidStripped++;
                     anyEntityChanged = true;
@@ -484,12 +470,12 @@ public final class DirtNbtCleaner {
         if (kind == FolderKind.REGION) {
             ListTag bes = root.getListOrEmpty("block_entities");
             if (!bes.isEmpty()) {
-                Map<Integer, SectionDecoder> sections = new HashMap<>();
+                Map<Integer, NbtSectionDecoder> sections = new HashMap<>();
                 ListTag secList = root.getListOrEmpty("sections");
                 for (int i = 0; i < secList.size(); i++) {
                     CompoundTag sec = secList.getCompoundOrEmpty(i);
                     int sectionY = sec.getByteOr("Y", (byte) 0);
-                    SectionDecoder dec = SectionDecoder.from(sec);
+                    NbtSectionDecoder dec = NbtSectionDecoder.from(sec);
                     if (dec != null) sections.put(sectionY, dec);
                 }
 
@@ -513,7 +499,7 @@ public final class DirtNbtCleaner {
                         anyBEChanged = true;
                         continue;
                     }
-                    SectionDecoder dec = sections.get(Math.floorDiv(y, 16));
+                    NbtSectionDecoder dec = sections.get(Math.floorDiv(y, 16));
                     String name = dec == null ? null : dec.blockNameAt(x & 15, Math.floorMod(y, 16), z & 15);
                     if (name == null || !entityBlocks.contains(name)) {
                         ghostStripped++;
@@ -567,77 +553,6 @@ public final class DirtNbtCleaner {
     }
 
     /**
-     * Snapshots the set of registered block IDs that produce a {@link Block}
-     * implementing {@link EntityBlock}. {@code BlockState.hasBlockEntity()}
-     * reduces to {@code block instanceof EntityBlock} (no state-specific
-     * variation in vanilla), so a name-only set is sufficient for the cleaner
-     * walk. Computed once at the start of {@link #run}; safe to publish to
-     * worker threads via the volatile {@link #blocksWithEntity}.
-     */
-    private static Set<String> computeBlocksWithEntity() {
-        Set<String> set = new HashSet<>();
-        for (Block block : BuiltInRegistries.BLOCK) {
-            if (block instanceof EntityBlock) {
-                Identifier id = BuiltInRegistries.BLOCK.getKey(block);
-                if (id != null) set.add(id.toString());
-            }
-        }
-        return Set.copyOf(set);
-    }
-
-    /**
-     * Mirrors {@link AuditDirtyChunks}'s {@code computeBeIdToBlocks}: BE type
-     * id (e.g. {@code minecraft:hopper}) to the set of block names whose
-     * {@link Block#defaultBlockState} passes {@link BlockEntityType#isValid}.
-     * Used to decide be-type-mismatch on BE entries whose block survives the
-     * ghost-bes test but is the wrong target type for the BE NBT id.
-     */
-    private static Map<String, Set<String>> computeBeIdToBlocks() {
-        Map<String, Set<String>> result = new HashMap<>();
-        for (BlockEntityType<?> type : BuiltInRegistries.BLOCK_ENTITY_TYPE) {
-            Identifier typeId = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type);
-            if (typeId == null) continue;
-            Set<String> blocks = new HashSet<>();
-            for (Block block : BuiltInRegistries.BLOCK) {
-                if (type.isValid(block.defaultBlockState())) {
-                    Identifier blockId = BuiltInRegistries.BLOCK.getKey(block);
-                    if (blockId != null) blocks.add(blockId.toString());
-                }
-            }
-            result.put(typeId.toString(), Set.copyOf(blocks));
-        }
-        return Map.copyOf(result);
-    }
-
-    private static boolean entityHasInvalidAttribute(CompoundTag entity) {
-        ListTag attrs = entity.getListOrEmpty("attributes");
-        for (int i = 0; i < attrs.size(); i++) {
-            CompoundTag attr = attrs.getCompoundOrEmpty(i);
-            if (isInvalidResourceLocation(attr.getStringOr("id", ""))) return true;
-            ListTag mods = attr.getListOrEmpty("modifiers");
-            for (int j = 0; j < mods.size(); j++) {
-                if (isInvalidResourceLocation(mods.getCompoundOrEmpty(j).getStringOr("id", ""))) return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isInvalidResourceLocation(String id) {
-        // Empty / missing id is not the dirt we strip (it would fail the codec
-        // for a different reason). Only flag a present id that fails the parser.
-        return !id.isEmpty() && Identifier.tryParse(id) == null;
-    }
-
-    private static UuidResult decodeUuid(CompoundTag entity) {
-        Tag tag = entity.get("UUID");
-        if (tag == null) return UuidResult.ABSENT;
-        if (!(tag instanceof IntArrayTag intArrayTag)) return UuidResult.MALFORMED;
-        int[] array = intArrayTag.getAsIntArray();
-        if (array.length != 4) return UuidResult.MALFORMED;
-        return UuidResult.parsed(UUIDUtil.uuidFromIntArray(array));
-    }
-
-    /**
      * Recursively dedup the {@code Passengers} list rooted at {@code entity},
      * mutating in place. First-occurrence-wins via {@link #uuidMap#putIfAbsent};
      * a colliding passenger is dropped (and its own passengers vanish with it),
@@ -661,7 +576,7 @@ public final class DirtNbtCleaner {
         boolean strippedAtThisLevel = false;
         for (int i = 0; i < passengers.size(); i++) {
             CompoundTag passenger = passengers.getCompoundOrEmpty(i);
-            UuidResult r = decodeUuid(passenger);
+            UuidResult r = UuidDecoder.decodeUuid(passenger);
             if (r.status() == UuidStatus.PRESENT_PARSED) {
                 ChunkPos existing = uuidMap.putIfAbsent(r.uuid(), pos);
                 if (existing != null) {
@@ -696,7 +611,7 @@ public final class DirtNbtCleaner {
         ListTag passengers = entity.getListOrEmpty("Passengers");
         for (int i = 0; i < passengers.size(); i++) {
             CompoundTag passenger = passengers.getCompoundOrEmpty(i);
-            UuidResult r = decodeUuid(passenger);
+            UuidResult r = UuidDecoder.decodeUuid(passenger);
             if (r.status() == UuidStatus.PRESENT_PARSED) {
                 uuidMap.putIfAbsent(r.uuid(), pos);
             }
@@ -826,7 +741,11 @@ public final class DirtNbtCleaner {
     private static void rescanRegion(
         RegionStorageInfo info, Path regionPath, Path regionFolder, int rx, int rz, FolderKind kind
     ) throws IOException {
-        try (RegionFile region = new RegionFile(info, regionPath, regionFolder, true)) {
+        // sync=false: rescan is read-only (no writes back to the region), so
+        // DSYNC is a strict no-op cost. Matches the main-pass open at processRegion
+        // and silences the would-be confusion of a reader observing an
+        // inconsistency between the two RegionFile opens.
+        try (RegionFile region = new RegionFile(info, regionPath, regionFolder, false)) {
             int xOffset = rx << 5;
             int zOffset = rz << 5;
             String entitiesKey = kind == FolderKind.REGION ? "entities" : "Entities";
@@ -846,7 +765,7 @@ public final class DirtNbtCleaner {
                     ListTag entities = root.getListOrEmpty(entitiesKey);
                     for (int i = 0; i < entities.size(); i++) {
                         CompoundTag entity = entities.getCompoundOrEmpty(i);
-                        UuidResult r = decodeUuid(entity);
+                        UuidResult r = UuidDecoder.decodeUuid(entity);
                         if (r.status() == UuidStatus.PRESENT_PARSED) {
                             uuidMap.putIfAbsent(r.uuid(), pos);
                         }
@@ -963,39 +882,4 @@ public final class DirtNbtCleaner {
         final AtomicLong legacyChunksSkipped = new AtomicLong();
     }
 
-    // Mirror of AuditDirtyChunks.SectionDecoder. Duplicated rather than shared
-    // to avoid touching the audit class's surface; two callers don't yet
-    // justify extracting a top-level utility. Decodes a 1.16+ paletted-container
-    // section: bits-per-entry is max(4, ceil(log2(palette.size()))), indices
-    // are packed into the data long array with no straddling, block index for
-    // local (x,y,z) follows YZX order.
-    private record SectionDecoder(List<String> palette, long[] data, int bitsPerEntry) {
-        static SectionDecoder from(CompoundTag section) {
-            CompoundTag bs = section.getCompoundOrEmpty("block_states");
-            ListTag pal = bs.getListOrEmpty("palette");
-            if (pal.isEmpty()) return null;
-            List<String> names = new ArrayList<>(pal.size());
-            for (int i = 0; i < pal.size(); i++) {
-                names.add(pal.getCompoundOrEmpty(i).getStringOr("Name", AIR));
-            }
-            long[] data = bs.getLongArray("data").orElse(new long[0]);
-            int bits = names.size() <= 1 ? 0
-                : Math.max(4, 32 - Integer.numberOfLeadingZeros(names.size() - 1));
-            return new SectionDecoder(names, data, bits);
-        }
-
-        String blockNameAt(int x, int y, int z) {
-            if (bitsPerEntry == 0) return palette.get(0);
-            if (data.length == 0) return null;
-            int flatIndex = (y * 16 + z) * 16 + x;
-            int indicesPerLong = 64 / bitsPerEntry;
-            int longIndex = flatIndex / indicesPerLong;
-            if (longIndex >= data.length) return null;
-            int bitOffset = (flatIndex % indicesPerLong) * bitsPerEntry;
-            long mask = (1L << bitsPerEntry) - 1;
-            int paletteIndex = (int) ((data[longIndex] >>> bitOffset) & mask);
-            if (paletteIndex < 0 || paletteIndex >= palette.size()) return null;
-            return palette.get(paletteIndex);
-        }
-    }
 }

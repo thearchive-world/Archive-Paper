@@ -5,10 +5,7 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -18,13 +15,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import net.minecraft.core.UUIDUtil;
-import net.minecraft.core.registries.BuiltInRegistries;
+import archive.UuidDecoder.UuidResult;
+import archive.UuidDecoder.UuidStatus;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.IntArrayTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
-import net.minecraft.nbt.Tag;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -107,7 +102,6 @@ public final class AuditDirtyChunks {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Pattern REGION_FILE_REGEX =
         Pattern.compile("^r\\.(-?[0-9]+)\\.(-?[0-9]+)\\.mca$");
-    private static final String AIR = "minecraft:air";
     // Drive Paper's 60s watchdog at a steady cadence without spamming.
     private static final long WATCHDOG_TICK_INTERVAL_MILLIS = 5_000;
     // Same cadence as DirtNbtCleaner so audit progress logs look familiar.
@@ -132,8 +126,8 @@ public final class AuditDirtyChunks {
     public static void run(MinecraftServer server) {
         LOGGER.info("[The Archive] Starting dirty-chunk audit pass...");
         long start = System.currentTimeMillis();
-        blocksWithEntity = computeBlocksWithEntity();
-        beIdToBlocks = computeBeIdToBlocks();
+        blocksWithEntity = BlockEntityRegistry.computeBlocksWithEntity();
+        beIdToBlocks = BlockEntityRegistry.computeBeIdToBlocks();
         uuidCounts = new ConcurrentHashMap<>();
         Totals total = new Totals();
 
@@ -165,7 +159,7 @@ public final class AuditDirtyChunks {
                 try {
                     polled |= level.getChunkSource().pollTask();
                 } catch (Throwable t) {
-                    LOGGER.error("[The Archive] pollTask failed during audit: {}", t.toString());
+                    LOGGER.error("[The Archive] pollTask failed during audit", t);
                 }
             }
             long now = System.currentTimeMillis();
@@ -194,50 +188,6 @@ public final class AuditDirtyChunks {
                     total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
                     total.bakeComplete, total.bakePartial, total.bakePending, total.bakeIneligible,
                     total.poiValidSections, total.poiInvalidSections, elapsedSec);
-    }
-
-    /**
-     * Snapshots the registered blocks that produce a {@link Block} implementing
-     * {@link EntityBlock}. {@code BlockState.hasBlockEntity()} reduces to
-     * {@code block instanceof EntityBlock}, so a name-only set is sufficient
-     * for the audit walk.
-     */
-    private static Set<String> computeBlocksWithEntity() {
-        Set<String> set = new HashSet<>();
-        for (Block block : BuiltInRegistries.BLOCK) {
-            if (block instanceof EntityBlock) {
-                Identifier id = BuiltInRegistries.BLOCK.getKey(block);
-                if (id != null) set.add(id.toString());
-            }
-        }
-        return Set.copyOf(set);
-    }
-
-    /**
-     * Snapshots the runtime map from BE type id to its valid-block set, as
-     * defined by {@link BlockEntityType#isValid(net.minecraft.world.level.block.state.BlockState)}.
-     * Used by the {@code be-type-mismatch} check; the type's accept set is
-     * iterated against {@link Block#defaultBlockState()} for each registered
-     * block, which captures the type's intended block targets even if a
-     * specific block-state property would refine acceptance (the audit walks
-     * NBT, not live BlockStates, so the default-state predicate is the
-     * tightest test we can run without faulting on chunk load).
-     */
-    private static Map<String, Set<String>> computeBeIdToBlocks() {
-        Map<String, Set<String>> result = new HashMap<>();
-        for (BlockEntityType<?> type : BuiltInRegistries.BLOCK_ENTITY_TYPE) {
-            Identifier typeId = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type);
-            if (typeId == null) continue;
-            Set<String> blocks = new HashSet<>();
-            for (Block block : BuiltInRegistries.BLOCK) {
-                if (type.isValid(block.defaultBlockState())) {
-                    Identifier blockId = BuiltInRegistries.BLOCK.getKey(block);
-                    if (blockId != null) blocks.add(blockId.toString());
-                }
-            }
-            result.put(typeId.toString(), Set.copyOf(blocks));
-        }
-        return Map.copyOf(result);
     }
 
     private static Totals auditLevel(ServerLevel level) {
@@ -443,11 +393,11 @@ public final class AuditDirtyChunks {
         ListTag bes = root.getListOrEmpty("block_entities");
         if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, 0, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
 
-        Map<Integer, SectionDecoder> sections = new HashMap<>();
+        Map<Integer, NbtSectionDecoder> sections = new HashMap<>();
         for (int i = 0; i < root.getListOrEmpty("sections").size(); i++) {
             CompoundTag sec = root.getListOrEmpty("sections").getCompoundOrEmpty(i);
             int sectionY = sec.getByteOr("Y", (byte) 0);
-            SectionDecoder dec = SectionDecoder.from(sec);
+            NbtSectionDecoder dec = NbtSectionDecoder.from(sec);
             if (dec != null) sections.put(sectionY, dec);
         }
 
@@ -471,7 +421,7 @@ public final class AuditDirtyChunks {
                 coordMismatch++;
                 continue;
             }
-            SectionDecoder dec = sections.get(Math.floorDiv(y, 16));
+            NbtSectionDecoder dec = sections.get(Math.floorDiv(y, 16));
             String name = dec == null ? null : dec.blockNameAt(x & 15, Math.floorMod(y, 16), z & 15);
             if (name == null || !entityBlocks.contains(name)) {
                 ghosts++;
@@ -593,7 +543,7 @@ public final class AuditDirtyChunks {
         for (int i = 0; i < entities.size(); i++) {
             CompoundTag entity = entities.getCompoundOrEmpty(i);
             count++;
-            if (entityHasInvalidAttribute(entity)) invalid++;
+            if (AttributeValidator.entityHasInvalidAttribute(entity)) invalid++;
             // Walk Passengers for UUID counting only; count/invalid intentionally
             // stay top-level. Mirrors {@code DirtNbtCleaner.stripDuplicatePassengers}
             // so a future regression in nested dedup shows up here.
@@ -603,91 +553,13 @@ public final class AuditDirtyChunks {
     }
 
     private static void auditEntityUuids(CompoundTag entity) {
-        UuidResult r = decodeUuid(entity);
+        UuidResult r = UuidDecoder.decodeUuid(entity);
         if (r.status() == UuidStatus.PRESENT_PARSED) {
             uuidCounts.computeIfAbsent(r.uuid(), k -> new AtomicInteger()).incrementAndGet();
         }
         ListTag passengers = entity.getListOrEmpty("Passengers");
         for (int i = 0; i < passengers.size(); i++) {
             auditEntityUuids(passengers.getCompoundOrEmpty(i));
-        }
-    }
-
-    private enum UuidStatus { ABSENT, PRESENT_PARSED, PRESENT_MALFORMED }
-
-    private record UuidResult(UuidStatus status, UUID uuid) {
-        static final UuidResult ABSENT = new UuidResult(UuidStatus.ABSENT, null);
-        static final UuidResult MALFORMED = new UuidResult(UuidStatus.PRESENT_MALFORMED, null);
-        static UuidResult parsed(UUID uuid) {
-            return new UuidResult(UuidStatus.PRESENT_PARSED, uuid);
-        }
-    }
-
-    private static UuidResult decodeUuid(CompoundTag entity) {
-        Tag tag = entity.get("UUID");
-        if (tag == null) return UuidResult.ABSENT;
-        if (!(tag instanceof IntArrayTag intArrayTag)) return UuidResult.MALFORMED;
-        int[] array = intArrayTag.getAsIntArray();
-        if (array.length != 4) return UuidResult.MALFORMED;
-        return UuidResult.parsed(UUIDUtil.uuidFromIntArray(array));
-    }
-
-    private static boolean entityHasInvalidAttribute(CompoundTag entity) {
-        ListTag attrs = entity.getListOrEmpty("attributes");
-        for (int i = 0; i < attrs.size(); i++) {
-            CompoundTag attr = attrs.getCompoundOrEmpty(i);
-            if (isInvalidResourceLocation(attr.getStringOr("id", ""))) return true;
-            ListTag mods = attr.getListOrEmpty("modifiers");
-            for (int j = 0; j < mods.size(); j++) {
-                if (isInvalidResourceLocation(mods.getCompoundOrEmpty(j).getStringOr("id", ""))) return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isInvalidResourceLocation(String id) {
-        // Empty / missing id is not the dirt we're measuring (it would fail the
-        // codec for a different reason). Only flag a present id that fails the
-        // ResourceLocation parser, matching what Paper's codec does on load.
-        return !id.isEmpty() && Identifier.tryParse(id) == null;
-    }
-
-    /**
-     * Decodes a 1.16+ paletted-container section. Bits-per-entry is
-     * {@code max(4, ceil(log2(palette.size())))}, indices are packed into the
-     * {@code data} long array with no straddling: each long holds
-     * {@code 64 / bitsPerEntry} indices. A palette of size 1 omits the data
-     * field entirely; the implicit index is 0. Block index for local
-     * (x, y, z) in [0, 16) follows {@code Strategy.BLOCK_STATES.getIndex}:
-     * {@code ((y * 16) + z) * 16 + x} (YZX order).
-     */
-    private record SectionDecoder(List<String> palette, long[] data, int bitsPerEntry) {
-        static SectionDecoder from(CompoundTag section) {
-            CompoundTag bs = section.getCompoundOrEmpty("block_states");
-            ListTag pal = bs.getListOrEmpty("palette");
-            if (pal.isEmpty()) return null;
-            List<String> names = new ArrayList<>(pal.size());
-            for (int i = 0; i < pal.size(); i++) {
-                names.add(pal.getCompoundOrEmpty(i).getStringOr("Name", AIR));
-            }
-            long[] data = bs.getLongArray("data").orElse(new long[0]);
-            int bits = names.size() <= 1 ? 0
-                : Math.max(4, 32 - Integer.numberOfLeadingZeros(names.size() - 1));
-            return new SectionDecoder(names, data, bits);
-        }
-
-        String blockNameAt(int x, int y, int z) {
-            if (bitsPerEntry == 0) return palette.get(0);
-            if (data.length == 0) return null;
-            int flatIndex = (y * 16 + z) * 16 + x;
-            int indicesPerLong = 64 / bitsPerEntry;
-            int longIndex = flatIndex / indicesPerLong;
-            if (longIndex >= data.length) return null;
-            int bitOffset = (flatIndex % indicesPerLong) * bitsPerEntry;
-            long mask = (1L << bitsPerEntry) - 1;
-            int paletteIndex = (int) ((data[longIndex] >>> bitOffset) & mask);
-            if (paletteIndex < 0 || paletteIndex >= palette.size()) return null;
-            return palette.get(paletteIndex);
         }
     }
 
