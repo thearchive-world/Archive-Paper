@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Fri, 26 Jun 2026 20:36:34 +0200
+Subject: [PATCH] Skip network listener for post-spin batch passes
+
+
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index da88f9e2c5f96885325d0725524de98b09434832..fa1a047bb7528b050994e7cdad10293edb0b6be6 100644
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -320,6 +320,20 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         // Paper end - Unix domain socket support
+ 
+         this.initializeKeyPair();
++        // The Archive start - batch passes run headless. When any post-spin pass
++        // (--upgradeChunks/--cleanDirtyChunks/--bakeLight/--auditDirtyChunks) is
++        // requested, skip the network listener so the run never depends on a free
++        // server-port. Otherwise a port collision aborts initServer AFTER the
++        // pre-spin world-folder migration but BEFORE the post-spin pass dispatch,
++        // leaving a migrated-but-not-upgraded world.
++        if (archive.ArchiveSettings.anyPostSpinPass()) {
++            // Still construct the ServerConnectionListener so this.connection is
++            // non-null (initPostWorld calls this.connection.acceptConnections()
++            // unconditionally; with no bound channels that is a no-op) without
++            // binding the port.
++            this.getConnection();
++            LOGGER.info("[The Archive] Batch pass requested; running headless (network listener skipped, port {} not bound).", this.getPort());
++        } else {
+         LOGGER.info("Starting Minecraft server on {}:{}", this.getLocalIp().isEmpty() ? "*" : this.getLocalIp(), this.getPort());
+ 
+         try {
+@@ -331,6 +345,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+             if (true) throw new IllegalStateException("Failed to bind to port", e); // Paper - Propagate failed to bind to port error
+             return false;
+         }
++        }
++        // The Archive end - batch passes run headless
+ 
+         // CraftBukkit start
+         this.server.loadPlugins();

@@ -160,6 +160,19 @@ public final class ArchiveSettings {
         return v instanceof Boolean b ? b : true;
     }
 
+    /**
+     * True when this invocation requested any post-spin batch pass
+     * (--upgradeChunks / --cleanDirtyChunks / --bakeLight / --auditDirtyChunks).
+     * Read at initServer time (options are captured pre-spin) to run those passes
+     * headless: the network listener is skipped so a batch run never depends on a
+     * free server-port. Without that, a port collision aborts initServer after the
+     * pre-spin world-folder migration but before the post-spin pass, leaving a
+     * migrated-but-not-upgraded world.
+     */
+    public static boolean anyPostSpinPass() {
+        return upgradeChunksRequested() || cleanDirtyChunks() || bakeLight() || auditDirtyChunks();
+    }
+
     public static boolean preserveChunkTimestamps() {
         return preserveChunkTimestamps;
     }
