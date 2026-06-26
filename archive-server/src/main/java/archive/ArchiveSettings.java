@@ -146,6 +146,20 @@ public final class ArchiveSettings {
         return v instanceof Boolean b ? b : true;
     }
 
+    /**
+     * When set, --auditDirtyChunks exits non-zero (70) if it finds any of the
+     * dirt classes the cleaner targets (ghost-bes, be-coord/type-mismatch,
+     * invalid-attrs, uuid-dups) that should be zero after --cleanDirtyChunks.
+     * Opt-in so a plain measurement audit still exits 0; informational counts
+     * (legacy-chunks, bake-*, poi-*, totals) never gate. Default off.
+     */
+    public static boolean auditFailOnDirty() {
+        OptionSet o = options();
+        if (o == null || !o.has("auditFailOnDirty")) return false;
+        Object v = o.valueOf("auditFailOnDirty");
+        return v instanceof Boolean b ? b : true;
+    }
+
     public static boolean cleanDirtyChunks() {
         OptionSet o = options();
         if (o == null || !o.has("cleanDirtyChunks")) return false;

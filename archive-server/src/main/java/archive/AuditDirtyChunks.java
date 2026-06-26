@@ -199,6 +199,19 @@ public final class AuditDirtyChunks {
                     total.poiValidSections, total.poiInvalidSections,
                     elapsedSec);
 
+        // Optional pipeline gate: when --auditFailOnDirty is set, a non-zero
+        // count of the dirt classes the cleaner targets (and that should be zero
+        // after --cleanDirtyChunks) marks the pass failed, so the dispatcher
+        // sets abnormalExit and the process exits 70. legacy-chunks, bake-*,
+        // poi-*, and the plain totals are informational and never gate.
+        long dirt = total.ghostBes + total.beCoordMismatch + total.beTypeMismatch
+                  + total.invalidAttrs + uuidDups;
+        if (ArchiveSettings.auditFailOnDirty() && dirt > 0) {
+            ArchiveSettings.markPassFailed();
+            LOGGER.error("[The Archive] Audit gate (--auditFailOnDirty): {} cleaner-target dirt entries remain (ghost-bes={}, be-coord-mismatch={}, be-type-mismatch={}, invalid-attrs={}, uuid-dups={}); exiting non-zero.",
+                         dirt, total.ghostBes, total.beCoordMismatch, total.beTypeMismatch, total.invalidAttrs, uuidDups);
+        }
+
         // Drop the populated map for GC. On the 1.1 TB main archive the audit
         // walks ~150M entities; the static reference would otherwise pin the
         // whole map for the JVM's lifetime after the pass returns. Reassigning

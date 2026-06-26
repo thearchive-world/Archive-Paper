@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Fri, 26 Jun 2026 21:44:38 +0200
+Subject: [PATCH] auditFailOnDirty CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 0085dede6f6217d52359f2eb766d5caf75ff403e..dfd15779279916fb87c86792bc9f3a083df0b6a7 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -174,6 +174,12 @@ public class Main {
+                     .defaultsTo(true)
+                     .describedAs("Run the read-only dirty-chunk audit pass");
+ 
++                this.accepts("auditFailOnDirty", "Make --auditDirtyChunks exit non-zero (70) when it finds any cleaner-target dirt (ghost-bes, be-coord-mismatch, be-type-mismatch, invalid-attrs, uuid-dups) that should be zero after --cleanDirtyChunks. Opt-in pipeline gate: without it the audit only reports counts and exits 0. Informational counts (legacy-chunks, bake-*, poi-*, totals) never gate. Default off.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Fail the audit (non-zero exit) if cleaner-target dirt remains");
++
+                 this.accepts("cleanDirtyChunks", "Post-pass for --upgradeChunks. Strips the dirt classes --auditDirtyChunks measures (invalid-attrs, ghost-bes, be-coord-mismatch, uuid-dups) directly from region/*.mca and entities/*.mca NBT, in parallel, with no chunk-system load. Run AFTER --upgradeChunks (DFU), never on raw 1.12.2: vanilla legacy attribute names fail the same Identifier.tryParse parser the Forge-taint detector uses, so Level-wrapped chunks are skipped and counted under legacy-chunks. Halts cleanly after the pass. Does not chain with --upgradeChunks; run the three (upgrade, clean, audit) as separate invocations.")
+                     .withOptionalArg()
+                     .ofType(Boolean.class)
