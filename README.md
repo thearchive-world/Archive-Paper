@@ -25,11 +25,25 @@ Archive-Paper does not auto-upgrade pre-26.1 source worlds on first startup. To 
 
 `--auditDirtyChunks` is the read-only audit pass. Walks each dimension's `region/*.mca`, decodes block entities and section block states, counts dirt classes (`invalid-attrs`, `ghost-bes`, `be-coord-mismatch`, `be-type-mismatch`, `uuid-dups`, `bake-partial`, `bake-pending`, `bake-ineligible`). Single-threaded; logs progress every 30s as `X / Y regions (Z chunks, W ch/s)`. Prints per-dim and total counts; does not modify world files. Use to verify the pipeline ran clean (counts should be zero, or within published bake-partial spec).
 
+`--auditFailOnDirty` turns the audit into a pipeline gate. By default `--auditDirtyChunks` reports counts and exits 0 whatever it finds, so a measurement audit always succeeds; with this flag the audit exits 70 when any cleaner-target class (`ghost-bes`, `be-coord-mismatch`, `be-type-mismatch`, `invalid-attrs`, `uuid-dups`) is non-zero. The informational counts (`legacy-chunks`, `bake-*`, `poi-valid`, `poi-invalid`, totals) never gate. Pair it as `--auditDirtyChunks --auditFailOnDirty` for the final pipeline step; it exits 0 only once `--cleanDirtyChunks` has driven those five classes to zero. Opt-in, default off.
+
 `--preserveChunkTimestamps` preserves the per-chunk region-file slot timestamps (the 1024-slot table in each `.mca` header, sector 1). The flag is hooked at the shared `RegionFile.write` entry, so it covers `--upgradeChunks`, `--cleanDirtyChunks`, and `--bakeLight`, plus any other chunk write while the flag is set; set it only on archive-pipeline invocations, not on a live server or a `--forceUpgrade` pre-spin. Without the flag every touched slot's timestamp is restamped to the pipeline's wallclock; with it, the original slot timestamp is preserved as long as it was nonzero. The flag must be set on every pipeline invocation that should preserve those timestamps; it has no retroactive effect on slots already stamped by a flagless prior run. Default off so the vanilla restamp behavior is unchanged for non-archival runs. The NBT `LastUpdate` and `InhabitedTime` fields are already preserved unchanged by the pipeline; this flag only affects the slot-header timestamps.
 
 The operator pipeline is `--upgradeChunks` then `--cleanDirtyChunks` then `--bakeLight` then `--auditDirtyChunks`, each as a separate invocation. None of the flags chain.
 
 Combining `--forceUpgrade` (or `--recreateRegionFiles`) with `--upgradeChunks` is redundant; both run conversion on the same files. A warning is logged at INFO.
+
+The batch passes run headless. When any of `--upgradeChunks`, `--cleanDirtyChunks`, `--bakeLight`, or `--auditDirtyChunks` is requested, the server skips the network listener and does not bind `server-port`, so a pass never depends on a free port. Before this, a port collision could abort startup after the world-folder migration but before the upgrade ran, leaving a world migrated to the per-dimension layout but not data-upgraded. A normal (non-pass) server run binds the port as usual.
+
+## Exit codes
+
+The passes set the process exit code so a pipeline script can gate on `$?` between stages:
+
+- `0`: success. A pass completed cleanly, or a normal server run shut down normally.
+- `70`: a batch pass failed. The pass logged `<pass> FAILED` (non-zero tracked region, chunk, or IO failures) or threw, or `--auditFailOnDirty` found cleaner-target dirt. This reuses Paper's existing abnormal-exit code.
+- `1`: a bad invocation. An unrecognized or malformed CLI option, or a fatal startup condition such as a `!` or `+` in the working-directory path, an unsupported pre-release JDK, or a pre-spin boot failure.
+
+A pass that completes with some per-chunk failures still logs `<pass> FAILED` and exits 70, so "logged success" and "exited 0" now mean the same thing for the pipeline.
 
 ## Examples
 
@@ -45,8 +59,10 @@ Full upgrade pipeline on a pre-26.1 world, one invocation per pass:
 java -Xmx32G -jar paperclip-*.jar nogui --upgradeChunks --upgradeWorkerCount=16 --splitEntities
 java -Xmx32G -jar paperclip-*.jar nogui --cleanDirtyChunks --upgradeWorkerCount=16
 java -Xmx32G -jar paperclip-*.jar nogui --bakeLight --upgradeWorkerCount=16
-java -Xmx32G -jar paperclip-*.jar nogui --auditDirtyChunks
+java -Xmx32G -jar paperclip-*.jar nogui --auditDirtyChunks --auditFailOnDirty
 ```
+
+Each line halts after its pass; check `$?` between them to stop the pipeline on the first failure (a failed pass or, on the last line, residual dirt exits non-zero).
 
 32-core host, override the default worker cap:
 
