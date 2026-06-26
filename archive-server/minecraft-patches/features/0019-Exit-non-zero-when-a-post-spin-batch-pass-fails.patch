@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Fri, 26 Jun 2026 21:21:44 +0200
+Subject: [PATCH] Exit non-zero when a post-spin batch pass fails
+
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index b52daea119d4804377862d0a97ddbc6cd01cd2f6..b2ac85dad481c2ea20ad7dc7fdb351f90c73e02b 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1329,29 +1329,53 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             // The Archive start - upgrade chunks post-spin (first in dispatch; runs the pre-26.1 direct-NBT chunk upgrade pass)
+             if (archive.ArchiveSettings.upgradeChunksRequested()
+                     && !archive.ArchiveSettings.upgradeChunksComplete()) {
+-                archive.ChunkUpgrader.run(this);
++                try {
++                    archive.ChunkUpgrader.run(this);
++                } catch (Throwable t) {
++                    LOGGER.error("[The Archive] --upgradeChunks pass threw; marking abnormal exit.", t);
++                    archive.ArchiveSettings.markPassFailed();
++                }
+                 archive.ArchiveSettings.markUpgradeChunksComplete();
++                if (archive.ArchiveSettings.passFailed()) this.abnormalExit = true; // The Archive - a failed pass must exit non-zero (70), not report success
+                 this.halt(false);
+                 return;
+             }
+             // The Archive end - upgrade chunks post-spin
+             // The Archive start - clean dirty chunks post-spin (post-pass for --upgradeChunks)
+             if (archive.ArchiveSettings.cleanDirtyChunks()) {
+-                archive.DirtNbtCleaner.run(this);
++                try {
++                    archive.DirtNbtCleaner.run(this);
++                } catch (Throwable t) {
++                    LOGGER.error("[The Archive] --cleanDirtyChunks pass threw; marking abnormal exit.", t);
++                    archive.ArchiveSettings.markPassFailed();
++                }
++                if (archive.ArchiveSettings.passFailed()) this.abnormalExit = true; // The Archive - a failed pass must exit non-zero (70), not report success
+                 this.halt(false);
+                 return;
+             }
+             // The Archive end - clean dirty chunks post-spin
+             // The Archive start - bake light post-spin (post-pass for --upgradeChunks + --cleanDirtyChunks)
+             if (archive.ArchiveSettings.bakeLight()) {
+-                archive.BakeLightPass.run(this);
++                try {
++                    archive.BakeLightPass.run(this);
++                } catch (Throwable t) {
++                    LOGGER.error("[The Archive] --bakeLight pass threw; marking abnormal exit.", t);
++                    archive.ArchiveSettings.markPassFailed();
++                }
++                if (archive.ArchiveSettings.passFailed()) this.abnormalExit = true; // The Archive - a failed pass must exit non-zero (70), not report success
+                 this.halt(false);
+                 return;
+             }
+             // The Archive end - bake light post-spin
+             // The Archive start - audit dirty chunks post-spin (read-only verification; last in dispatch)
+             if (archive.ArchiveSettings.auditDirtyChunks()) {
+-                archive.AuditDirtyChunks.run(this);
++                try {
++                    archive.AuditDirtyChunks.run(this);
++                } catch (Throwable t) {
++                    LOGGER.error("[The Archive] --auditDirtyChunks pass threw; marking abnormal exit.", t);
++                    archive.ArchiveSettings.markPassFailed();
++                }
++                if (archive.ArchiveSettings.passFailed()) this.abnormalExit = true; // The Archive - a failed pass must exit non-zero (70), not report success
+                 this.halt(false);
+                 return;
+             }

@@ -182,6 +182,7 @@ public final class DirtNbtCleaner {
         long progressReadFailed = failures.progressReadFailed.get();
         long rescanDimMissing = failures.rescanDimMissing.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
+            ArchiveSettings.markPassFailed();
             LOGGER.error("[The Archive] Dirty-chunk clean FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, {} totals-write failures, drain-interrupted={}, progress-read-failures={}, rescan-dim-missing={}; cleaned {} chunks (stripped {} invalid-attrs, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} uuid-dups, {} unparseable-uuid) in {}s",
                          failures.regionCount.get(), failures.chunkCount.get(), progressFailed, totalsFailed,
                          drainInterrupted, progressReadFailed, rescanDimMissing,

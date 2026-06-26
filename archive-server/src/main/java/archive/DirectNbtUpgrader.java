@@ -115,6 +115,7 @@ public final class DirectNbtUpgrader {
         long progressFailed = failures.progressAppendFailed.get();
         long progressReadFailed = failures.progressReadFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || progressFailed > 0) {
+            ArchiveSettings.markPassFailed();
             LOGGER.error("[The Archive] Chunk upgrade FAILED: {} region failures, {} chunk failures, {} progress-marker IO failures, progress-read-failures={}, {} chunks succeeded in {}s",
                          failures.regionCount.get(), failures.chunkCount.get(), progressFailed,
                          progressReadFailed, totalChunks, elapsedSec);

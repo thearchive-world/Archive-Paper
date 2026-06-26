@@ -173,6 +173,24 @@ public final class ArchiveSettings {
         return upgradeChunksRequested() || cleanDirtyChunks() || bakeLight() || auditDirtyChunks();
     }
 
+    private static volatile boolean passFailed;
+
+    /**
+     * Marks the current post-spin pass as failed. Each write/transform pass calls
+     * this from its FAILED summary branch (non-zero tracked region/chunk/IO
+     * failures), and the dispatcher also calls it when a pass throws. The
+     * dispatcher then sets {@code MinecraftServer.abnormalExit} so the process
+     * exits 70 instead of reporting success while having logged a failure, which
+     * a pipeline checking the exit code can detect.
+     */
+    public static void markPassFailed() {
+        passFailed = true;
+    }
+
+    public static boolean passFailed() {
+        return passFailed;
+    }
+
     public static boolean preserveChunkTimestamps() {
         return preserveChunkTimestamps;
     }

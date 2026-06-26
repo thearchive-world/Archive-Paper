@@ -157,6 +157,7 @@ public final class BakeLightPass {
         long progressReadFailed = failures.progressReadFailed.get();
         long crossRegionIoFail = failures.crossRegionWritesIoFailed.get();
         if (failures.regionCount.get() > 0 || failures.chunkCount.get() > 0 || tailMalformed > 0 || borderLoadFail > 0 || progressFailed > 0 || crossRegionIoFail > 0) {
+            ArchiveSettings.markPassFailed();
             LOGGER.error("[The Archive] Bake-light FAILED: {} region failures, {} chunk failures, {} border-load failures, {} cross-region journal IO failures, {} cross-region partial-decoded properties, {} journal-read malformed records, {} tail-pass malformed records, {} tail-pass-chunks-skipped, {} progress-marker IO failures, progress-read-failures={}, {} chunks walked in {}s",
                          failures.regionCount.get(), failures.chunkCount.get(), borderLoadFail, crossRegionIoFail, failures.crossRegionWritesPartialDecode.get(), failures.journalReadMalformed.get(), tailMalformed, failures.tailPassChunksSkipped.get(), progressFailed, progressReadFailed, totalChunks, elapsedSec);
             for (String key : failures.regions) {
