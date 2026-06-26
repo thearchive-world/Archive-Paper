@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Fri, 26 Jun 2026 20:36:34 +0200
+Subject: [PATCH] Exit non-zero on CLI option parse failure
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index e3193e8e4dbdf0e04dbbefa2ee9f12291d75a5b6..3a209e2a027a67d337f41dc9b9d7101524905e5c 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -208,6 +208,16 @@ public class Main {
+             } catch (IOException ex) {
+                 Logger.getLogger(Main.class.getName()).log(Level.SEVERE, null, ex);
+             }
++            // The Archive start - a CLI option parse failure must exit non-zero,
++            // not silently no-op. options == null only when parser.parse threw
++            // above (an unrecognized/malformed option); an explicit --help/-?
++            // leaves options set, so this never fires for the help path. Without
++            // it, a typo'd or removed flag prints usage and returns 0, so wrappers
++            // and CI see success while the intended pass never ran.
++            if (options == null) {
++                System.exit(1);
++            }
++            // The Archive end
+         } else if (options.has("v")) {
+             System.out.println(CraftServer.class.getPackage().getImplementationVersion());
+         } else {
