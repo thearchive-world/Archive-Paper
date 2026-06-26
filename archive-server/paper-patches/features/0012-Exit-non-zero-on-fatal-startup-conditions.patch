@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Fri, 26 Jun 2026 21:21:44 +0200
+Subject: [PATCH] Exit non-zero on fatal startup conditions
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index 3a209e2a027a67d337f41dc9b9d7101524905e5c..0085dede6f6217d52359f2eb766d5caf75ff403e 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -225,7 +225,7 @@ public class Main {
+             String path = new File(".").getAbsolutePath();
+             if (path.contains("!") || path.contains("+")) {
+                 System.err.println("Cannot run server in a directory with ! or + in the pathname. Please rename the affected folders and try again.");
+-                return;
++                System.exit(1); // The Archive - fatal startup condition must exit non-zero, not silently no-op (exit 0)
+             }
+ 
+             // Paper start - Improve java version check
+@@ -236,7 +236,7 @@ public class Main {
+             if (isPreRelease) {
+                 if (!skip) {
+                     System.err.println("Unsupported Java detected (" + javaVersionName + "). You are running an unsupported, non official, version. Only general availability versions of Java are supported. Please update your Java version. See https://docs.papermc.io/paper/faq#unsupported-java-detected-what-do-i-do for more information.");
+-                    return;
++                    System.exit(1); // The Archive - fatal startup condition must exit non-zero, not silently no-op (exit 0)
+                 }
+ 
+                 System.err.println("Unsupported Java detected ("+ javaVersionName + "), but the check was skipped. Proceed with caution! ");
+@@ -261,6 +261,10 @@ public class Main {
+                 io.papermc.paper.PaperBootstrap.boot(options);
+             } catch (Throwable t) {
+                 t.printStackTrace();
++                // The Archive - a boot/pass throwable must not report success.
++                // Pre-spin failures (world load, the upgrade tail) propagate here;
++                // without this the JVM falls through and exits 0.
++                System.exit(1);
+             }
+         }
+     }
