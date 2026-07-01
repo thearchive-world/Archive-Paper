@@ -1,7 +1,51 @@
 # Archive-Paper
-PaperMC Fork for thearchive.world
+
+A [PaperMC](https://github.com/PaperMC/Paper) fork that serves archived Minecraft worlds as read-only servers, for [thearchive.world](https://thearchive.world).
 
 Archive-Paper runs archived worlds as a read-only server: saving is disabled by default, so chunk mutations, entity ticks, and player edits never persist to disk. The upgrade pipeline below exists to bring pre-26.1 source worlds up to the current data version before they're served; day-to-day operation is just running the server with the default `--archiveDisableSaving` behaviour.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Upgrading worlds](#upgrading-worlds)
+- [Upgrading a standalone NBT set](#upgrading-a-standalone-nbt-set)
+- [Exit codes](#exit-codes)
+- [Examples](#examples)
+- [Support and contributing](#support-and-contributing)
+- [License](#license)
+
+## Requirements
+
+- **Java 25** (Temurin or any JDK 25 build). Older JDKs will not run the jar.
+- Heap sized to the job. Pass `-Xmx` explicitly; the examples below use 16 to 64 GB depending on world size and pass.
+
+## Installation
+
+**Download a prebuilt jar (recommended).** Grab the latest `archive-paper-<version>.jar` from the [Releases](https://github.com/thearchive-world/Archive-Paper/releases) page.
+
+**Or build from source** (Java 25 required):
+
+```sh
+git clone https://github.com/thearchive-world/Archive-Paper.git
+cd Archive-Paper
+./gradlew applyAllPatches
+./gradlew createPaperclipJar
+```
+
+The runnable paperclip jar lands in `archive-server/build/libs/` as `archive-paperclip-<version>.jar`. Every command below uses an `archive-paper*.jar` glob, which matches both the released jar and a freshly built one, so it works whatever exact version you have.
+
+## Quick start
+
+Serve an already-upgraded world (the day-to-day case; saving stays off by default):
+
+```sh
+java -Xmx32G -jar archive-paper*.jar nogui
+```
+
+To bring a pre-26.1 world up to the current data version first, see [Upgrading worlds](#upgrading-worlds) and the full [Examples](#examples).
 
 ## Usage
 
@@ -40,7 +84,7 @@ The batch passes run headless. When any of `--upgradeChunks`, `--cleanDirtyChunk
 `--upgradeNbt` is a standalone datafixer, separate from the world pipeline above: it touches no world content. It upgrades a directory of standalone block-entity NBT compounds from one data version to another in isolation, using the same rewrite converter (`MCDataConverter`) the chunk passes use, and writes each upgraded compound to an output directory under its original filename. It is the datafixer half of a downstream content-addressed block-entity store, which dedups a world's block entities to a small unique set and upgrades that set once per version bump.
 
 ```sh
-java -jar paperclip-*.jar nogui --upgradeNbt \
+java -jar archive-paper*.jar nogui --upgradeNbt \
     --archiveNbtType=TILE_ENTITY \
     --archiveNbtInputDir=<dir of source-version .nbt files> \
     --archiveNbtOutputDir=<dir for target-version .nbt files> \
@@ -70,16 +114,16 @@ A pass that completes with some per-chunk failures still logs `<pass> FAILED` an
 Serve an already-upgraded world (the day-to-day case; saving stays off by default):
 
 ```sh
-java -Xmx32G -jar paperclip-*.jar nogui
+java -Xmx32G -jar archive-paper*.jar nogui
 ```
 
 Full upgrade pipeline on a pre-26.1 world, one invocation per pass:
 
 ```sh
-java -Xmx32G -jar paperclip-*.jar nogui --upgradeChunks --upgradeWorkerCount=16 --splitEntities
-java -Xmx32G -jar paperclip-*.jar nogui --cleanDirtyChunks --upgradeWorkerCount=16
-java -Xmx32G -jar paperclip-*.jar nogui --bakeLight --upgradeWorkerCount=16
-java -Xmx32G -jar paperclip-*.jar nogui --auditDirtyChunks --auditFailOnDirty
+java -Xmx32G -jar archive-paper*.jar nogui --upgradeChunks --upgradeWorkerCount=16 --splitEntities
+java -Xmx32G -jar archive-paper*.jar nogui --cleanDirtyChunks --upgradeWorkerCount=16
+java -Xmx32G -jar archive-paper*.jar nogui --bakeLight --upgradeWorkerCount=16
+java -Xmx32G -jar archive-paper*.jar nogui --auditDirtyChunks --auditFailOnDirty
 ```
 
 Each line halts after its pass; check `$?` between them to stop the pipeline on the first failure (a failed pass or, on the last line, residual dirt exits non-zero).
@@ -87,23 +131,31 @@ Each line halts after its pass; check `$?` between them to stop the pipeline on 
 32-core host, override the default worker cap:
 
 ```sh
-java -Xmx64G -jar paperclip-*.jar nogui --upgradeChunks --upgradeWorkerCount=32
+java -Xmx64G -jar archive-paper*.jar nogui --upgradeChunks --upgradeWorkerCount=32
 ```
 
 Audit only, to inspect dirt classes on a world without modifying it:
 
 ```sh
-java -Xmx16G -jar paperclip-*.jar nogui --auditDirtyChunks
+java -Xmx16G -jar archive-paper*.jar nogui --auditDirtyChunks
 ```
 
 Resume an interrupted `--upgradeChunks` pass; just re-run the same command. Already-current chunks are skipped via the in-progress file (`.archive-upgrade-progress.txt`) and a per-chunk skip-if-current pre-flight:
 
 ```sh
-java -Xmx32G -jar paperclip-*.jar nogui --upgradeChunks
+java -Xmx32G -jar archive-paper*.jar nogui --upgradeChunks
 ```
 
 Legacy single-threaded path (use `--upgradeChunks` instead unless you need the pre-spin behaviour):
 
 ```sh
-java -Xmx32G -jar paperclip-*.jar nogui --forceUpgrade
+java -Xmx32G -jar archive-paper*.jar nogui --forceUpgrade
 ```
+
+## Support and contributing
+
+Report bugs and ask questions on the [issue tracker](https://github.com/thearchive-world/Archive-Paper/issues). Archive-Paper is a focused fork of [PaperMC](https://github.com/PaperMC/Paper) maintained for [thearchive.world](https://thearchive.world); it tracks upstream Paper and carries the archive pipeline patches on top.
+
+## License
+
+Archive-Paper inherits its licensing from upstream. Like Paper, it is licensed under the [GNU General Public License v3.0](LICENSE.md) (`GPL-3.0`), with some contributions released under the more permissive MIT license. See [LICENSE.md](LICENSE.md) for the full terms.
