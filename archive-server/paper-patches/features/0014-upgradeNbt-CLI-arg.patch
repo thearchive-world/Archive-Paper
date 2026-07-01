@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Wed, 1 Jul 2026 21:32:56 +0200
+Subject: [PATCH] `upgradeNbt` CLI arg
+
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index dfd15779279916fb87c86792bc9f3a083df0b6a7..70508dab963b5dc1551ddd6ada335b1de2cc49d3 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -197,6 +197,37 @@ public class Main {
+                     .ofType(Boolean.class)
+                     .defaultsTo(true)
+                     .describedAs("Preserve per-chunk region-file slot timestamps across pipeline writes");
++
++                this.accepts("upgradeNbt", "Standalone NBT-set upgrade pass. Datafixes every *.nbt file in --archiveNbtInputDir from --archiveNbtFromVersion to --archiveNbtToVersion (default: current WORLD_VERSION) via Paper's rewrite converter for the --archiveNbtType data type (TILE_ENTITY), writing each upgraded compound to --archiveNbtOutputDir under the same filename. Files are UNCOMPRESSED, empty-named-root NBT (read/written via NbtIo). This is the datafixer half of the downstream content-addressed block-entity store; it touches no world content. It runs post-spin like the other passes, so a scratch server/world dir is still required to boot (an empty one is fine; the server prepares a throwaway world that saving-off leaves unwritten) even though the input/output dirs are unrelated to that world. Standalone: it cannot be combined with --upgradeChunks/--cleanDirtyChunks/--bakeLight/--auditDirtyChunks. Halts cleanly after the pass; exits non-zero (70) if any file fails to convert.")
++                    .withOptionalArg()
++                    .ofType(Boolean.class)
++                    .defaultsTo(true)
++                    .describedAs("Run the standalone NBT-set upgrade pass");
++
++                this.accepts("archiveNbtType", "MCTypeRegistry data type for --upgradeNbt. Currently TILE_ENTITY (block-entities); the pass rejects an unknown or missing type with a non-zero exit.")
++                    .withRequiredArg()
++                    .ofType(String.class)
++                    .describedAs("NBT data type (TILE_ENTITY)");
++
++                this.accepts("archiveNbtInputDir", "Directory of source-version *.nbt files for --upgradeNbt. Each file is one compound at --archiveNbtFromVersion; filenames are opaque and preserved onto the output.")
++                    .withRequiredArg()
++                    .ofType(String.class)
++                    .describedAs("Input directory");
++
++                this.accepts("archiveNbtOutputDir", "Directory for upgraded *.nbt files from --upgradeNbt. Created if absent; existing files are overwritten (idempotent re-runs).")
++                    .withRequiredArg()
++                    .ofType(String.class)
++                    .describedAs("Output directory");
++
++                this.accepts("archiveNbtFromVersion", "Source data version for --upgradeNbt (required), e.g. 4189 for Minecraft 1.21.4.")
++                    .withRequiredArg()
++                    .ofType(Integer.class)
++                    .describedAs("Source data version");
++
++                this.accepts("archiveNbtToVersion", "Target data version for --upgradeNbt. Defaults to the running server's WORLD_VERSION (upgrade to current) when omitted.")
++                    .withRequiredArg()
++                    .ofType(Integer.class)
++                    .describedAs("Target data version");
+             }
+         };
+ 

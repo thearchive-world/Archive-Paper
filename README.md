@@ -33,7 +33,27 @@ The operator pipeline is `--upgradeChunks` then `--cleanDirtyChunks` then `--bak
 
 Combining `--forceUpgrade` (or `--recreateRegionFiles`) with `--upgradeChunks` is redundant; both run conversion on the same files. A warning is logged at INFO.
 
-The batch passes run headless. When any of `--upgradeChunks`, `--cleanDirtyChunks`, `--bakeLight`, or `--auditDirtyChunks` is requested, the server skips the network listener and does not bind `server-port`, so a pass never depends on a free port. Before this, a port collision could abort startup after the world-folder migration but before the upgrade ran, leaving a world migrated to the per-dimension layout but not data-upgraded. A normal (non-pass) server run binds the port as usual.
+The batch passes run headless. When any of `--upgradeChunks`, `--cleanDirtyChunks`, `--bakeLight`, `--auditDirtyChunks`, or `--upgradeNbt` is requested, the server skips the network listener and does not bind `server-port`, so a pass never depends on a free port. Before this, a port collision could abort startup after the world-folder migration but before the upgrade ran, leaving a world migrated to the per-dimension layout but not data-upgraded. A normal (non-pass) server run binds the port as usual.
+
+## Upgrading a standalone NBT set
+
+`--upgradeNbt` is a standalone datafixer, separate from the world pipeline above: it touches no world content. It upgrades a directory of standalone block-entity NBT compounds from one data version to another in isolation, using the same rewrite converter (`MCDataConverter`) the chunk passes use, and writes each upgraded compound to an output directory under its original filename. It is the datafixer half of a downstream content-addressed block-entity store, which dedups a world's block entities to a small unique set and upgrades that set once per version bump.
+
+```sh
+java -jar paperclip-*.jar nogui --upgradeNbt \
+    --archiveNbtType=TILE_ENTITY \
+    --archiveNbtInputDir=<dir of source-version .nbt files> \
+    --archiveNbtOutputDir=<dir for target-version .nbt files> \
+    --archiveNbtFromVersion=4189 \
+    --archiveNbtToVersion=4790
+```
+
+- `--archiveNbtType` selects the converter data type. `TILE_ENTITY` (block entities) is supported; an unknown type is rejected with a non-zero exit.
+- `--archiveNbtInputDir` and `--archiveNbtOutputDir` are directories of `*.nbt` files and must be different directories. Each input is one compound at `--archiveNbtFromVersion`; the output keeps the input filename. The output directory is created if absent, and re-runs overwrite.
+- `--archiveNbtFromVersion` is the source data version (required). `--archiveNbtToVersion` is the target; it defaults to the server's current world version when omitted, and must not be older than the from-version (the converter has no downgrade path).
+- The `.nbt` files are uncompressed, empty-named-root NBT (the form `net.minecraft.nbt.NbtIo.read`/`write` produces), not gzip.
+
+The pass still boots a world, since it runs in the same post-spin lifecycle as the other passes, so point it at a scratch server directory; an empty one is fine, because the server prepares a fresh throwaway world at boot (with saving off by default it is not written back to disk), and the input and output directories are unrelated to it. It runs headless and halts after the pass. It is standalone: combining it with `--upgradeChunks`, `--cleanDirtyChunks`, `--bakeLight`, or `--auditDirtyChunks` is rejected with an error and a non-zero exit rather than silently running only one of them. Exit codes follow the same convention as the other passes: `0` when every file converts, `70` when any file fails to convert (including a compound with no `id`, which the converter cannot route in isolation) or the configuration is invalid (unknown type, a missing input/output-directory flag, an input directory that does not exist, the input and output pointing at the same directory, or a non-positive or out-of-order version).
 
 ## Exit codes
 

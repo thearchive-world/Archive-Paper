@@ -2,6 +2,7 @@ package archive;
 
 import com.mojang.logging.LogUtils;
 import joptsimple.OptionSet;
+import net.minecraft.SharedConstants;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.dedicated.DedicatedServer;
 import org.slf4j.Logger;
@@ -57,14 +58,33 @@ public final class ArchiveSettings {
     }
 
     private static void warnIfMultiplePostSpinPassesSelected(OptionSet options) {
-        java.util.ArrayList<String> selected = new java.util.ArrayList<>(4);
-        if (upgradeChunksRequested()) selected.add("--upgradeChunks");
-        if (cleanDirtyChunks()) selected.add("--cleanDirtyChunks");
-        if (bakeLight()) selected.add("--bakeLight");
-        if (auditDirtyChunks()) selected.add("--auditDirtyChunks");
+        java.util.List<String> selected = requestedWorldContentPassFlags();
+        // --upgradeNbt is standalone: NbtSetUpgrader.run() hard-rejects it when
+        // combined with any world-content pass. Surface that pre-spin so the operator
+        // learns before a full scratch-world boot, not only at the exit-70.
+        if (upgradeNbtRequested() && !selected.isEmpty()) {
+            LOGGER.warn("[The Archive] --upgradeNbt is a standalone pass and cannot be combined with {}. The run will boot, reject the combination, and exit non-zero (70). Re-invoke --upgradeNbt on its own.",
+                    String.join(", ", selected));
+            return;
+        }
         if (selected.size() < 2) return;
         LOGGER.warn("[The Archive] Multiple post-spin pipeline flags requested: {}. The dispatcher runs at most one pass per invocation in order upgrade -> clean -> bake -> audit. This run will execute {}; re-invoke with the remaining flag(s) after it completes.",
                 String.join(", ", selected), selected.get(0));
+    }
+
+    /**
+     * The world-content post-spin pass flags requested by this invocation, in
+     * dispatch order (upgrade -> clean -> bake -> audit). Single source shared by
+     * the pre-spin advisory and NbtSetUpgrader's standalone-conflict check so the
+     * set cannot drift between the two.
+     */
+    static java.util.List<String> requestedWorldContentPassFlags() {
+        java.util.List<String> flags = new java.util.ArrayList<>(4);
+        if (upgradeChunksRequested()) flags.add("--upgradeChunks");
+        if (cleanDirtyChunks()) flags.add("--cleanDirtyChunks");
+        if (bakeLight()) flags.add("--bakeLight");
+        if (auditDirtyChunks()) flags.add("--auditDirtyChunks");
+        return flags;
     }
 
     private static boolean archiveDisableSavingValue(OptionSet o) {
@@ -174,17 +194,75 @@ public final class ArchiveSettings {
         return v instanceof Boolean b ? b : true;
     }
 
+    public static boolean upgradeNbtRequested() {
+        OptionSet o = options();
+        if (o == null || !o.has("upgradeNbt")) return false;
+        Object v = o.valueOf("upgradeNbt");
+        return v instanceof Boolean b ? b : true;
+    }
+
+    /**
+     * MCTypeRegistry data type for --upgradeNbt (e.g. "TILE_ENTITY"). Null when
+     * absent; NbtSetUpgrader maps the raw string to the converter type and
+     * rejects unknown/absent values.
+     */
+    public static String archiveNbtType() {
+        return archiveNbtStringOption("archiveNbtType");
+    }
+
+    /** Source directory of *.nbt compounds for --upgradeNbt. Null when absent. */
+    public static String archiveNbtInputDir() {
+        return archiveNbtStringOption("archiveNbtInputDir");
+    }
+
+    /** Destination directory for upgraded --upgradeNbt compounds. Null when absent. */
+    public static String archiveNbtOutputDir() {
+        return archiveNbtStringOption("archiveNbtOutputDir");
+    }
+
+    private static String archiveNbtStringOption(String name) {
+        OptionSet o = options();
+        if (o == null || !o.has(name)) return null;
+        Object v = o.valueOf(name);
+        return v instanceof String s && !s.isEmpty() ? s : null;
+    }
+
+    /**
+     * Source data version for --upgradeNbt. No sane default (an explicit
+     * from-version is the whole point), so returns -1 when absent; the pass
+     * rejects a non-positive value as a config error.
+     */
+    public static int archiveNbtFromVersion() {
+        return archiveNbtIntOption("archiveNbtFromVersion", -1);
+    }
+
+    /**
+     * Target data version for --upgradeNbt. Defaults to the running server's
+     * {@link SharedConstants#WORLD_VERSION} ("upgrade to current") when the flag
+     * is absent; a live-constant read, not a pinned literal.
+     */
+    public static int archiveNbtToVersion() {
+        return archiveNbtIntOption("archiveNbtToVersion", SharedConstants.WORLD_VERSION);
+    }
+
+    private static int archiveNbtIntOption(String name, int defaultValue) {
+        OptionSet o = options();
+        if (o == null || !o.has(name)) return defaultValue;
+        Object v = o.valueOf(name);
+        return v instanceof Integer i ? i : defaultValue;
+    }
+
     /**
      * True when this invocation requested any post-spin batch pass
-     * (--upgradeChunks / --cleanDirtyChunks / --bakeLight / --auditDirtyChunks).
-     * Read at initServer time (options are captured pre-spin) to run those passes
-     * headless: the network listener is skipped so a batch run never depends on a
-     * free server-port. Without that, a port collision aborts initServer after the
-     * pre-spin world-folder migration but before the post-spin pass, leaving a
-     * migrated-but-not-upgraded world.
+     * (--upgradeChunks / --cleanDirtyChunks / --bakeLight / --auditDirtyChunks /
+     * --upgradeNbt). Read at initServer time (options are captured pre-spin) to
+     * run those passes headless: the network listener is skipped so a batch run
+     * never depends on a free server-port. Without that, a port collision aborts
+     * initServer after the pre-spin world-folder migration but before the
+     * post-spin pass, leaving a migrated-but-not-upgraded world.
      */
     public static boolean anyPostSpinPass() {
-        return upgradeChunksRequested() || cleanDirtyChunks() || bakeLight() || auditDirtyChunks();
+        return upgradeChunksRequested() || cleanDirtyChunks() || bakeLight() || auditDirtyChunks() || upgradeNbtRequested();
     }
 
     private static volatile boolean passFailed;

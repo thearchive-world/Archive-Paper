@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Wed, 1 Jul 2026 21:35:18 +0200
+Subject: [PATCH] Upgrade standalone NBT set post-spin
+
+
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index b2ac85dad481c2ea20ad7dc7fdb351f90c73e02b..2f6739ddcac83b1e4a5491dae31fb391450e624c 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -1326,7 +1326,20 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+                 CompletableFuture.runAsync(com.destroystokyo.paper.PaperVersionFetcher::getUpdateStatusStartupMessage, io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR);
+             }
+             // Paper end - Improve outdated version checking
+-            // The Archive start - upgrade chunks post-spin (first in dispatch; runs the pre-26.1 direct-NBT chunk upgrade pass)
++            // The Archive start - upgrade standalone NBT set post-spin (dispatched first; standalone external NBT files, no world content; NbtSetUpgrader rejects being combined with the world-content passes)
++            if (archive.ArchiveSettings.upgradeNbtRequested()) {
++                try {
++                    archive.NbtSetUpgrader.run(this);
++                } catch (Throwable t) {
++                    LOGGER.error("[The Archive] --upgradeNbt pass threw; marking abnormal exit.", t);
++                    archive.ArchiveSettings.markPassFailed();
++                }
++                if (archive.ArchiveSettings.passFailed()) this.abnormalExit = true; // The Archive - a failed pass must exit non-zero (70), not report success
++                this.halt(false);
++                return;
++            }
++            // The Archive end - upgrade standalone NBT set post-spin
++            // The Archive start - upgrade chunks post-spin (first world-content pass; runs the pre-26.1 direct-NBT chunk upgrade pass)
+             if (archive.ArchiveSettings.upgradeChunksRequested()
+                     && !archive.ArchiveSettings.upgradeChunksComplete()) {
+                 try {
