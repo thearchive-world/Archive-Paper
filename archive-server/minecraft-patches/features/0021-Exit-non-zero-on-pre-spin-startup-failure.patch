@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Thu, 2 Jul 2026 14:45:40 +0200
+Subject: [PATCH] Exit non-zero on pre-spin startup failure
+
+
+diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
+index 965c77750e76a429d23f9ff6e075f056566e0b35..dafb73f4f5d1e9ae233b064a75e8637dcb4d0ea4 100644
+--- a/net/minecraft/server/Main.java
++++ b/net/minecraft/server/Main.java
+@@ -146,6 +146,10 @@ public class Main {
+             } else if (!eula.hasAgreedToEULA()) {
+                 // Paper end - eula system property
+                 LOGGER.info("You need to agree to the EULA in order to run the server. Go to eula.txt for more info.");
++                if (archive.ArchiveSettings.anyPostSpinPass()) { // The Archive - a batch pass blocked by an un-agreed EULA must not report success
++                    LOGGER.error("[The Archive] EULA not agreed while a batch pass was requested; the pass cannot run. Exiting non-zero. Agree to the EULA (eula.txt or -Dcom.mojang.eula.agree=true) and re-run.");
++                    System.exit(1);
++                }
+                 return;
+             }
+ 
+@@ -157,6 +161,7 @@ public class Main {
+                 LOGGER.error("For instructions on how to install the non-headless JRE, see https://docs.papermc.io/misc/java-install");
+                 LOGGER.error("");
+                 LOGGER.error(awtException);
++                System.exit(1); // The Archive - a headless JRE cannot run the server; exit non-zero
+                 return;
+             }
+             // Paper end - Detect headless JRE
+@@ -184,6 +189,7 @@ public class Main {
+                     levelDataUnfixed = access.getUnfixedDataTagWithFallback();
+                 } catch (IOException | NbtException | ReportedNbtException ex) {
+                     LOGGER.error("Failed to load world data. World files may be corrupted. Shutting down.", ex);
++                    System.exit(1); // The Archive - unreadable/corrupt world data is a fatal startup condition; exit non-zero
+                     return;
+                 }
+ 
+@@ -279,6 +285,7 @@ public class Main {
+                 LOGGER.warn(
+                     "Failed to load datapacks, can't proceed with server load. You can either fix your datapacks or reset to vanilla with --safeMode", e
+                 );
++                System.exit(1); // The Archive - datapack load failure is a fatal startup condition; exit non-zero
+                 return;
+             }
+ 
+@@ -356,6 +363,7 @@ public class Main {
+             */ // CraftBukkit end
+         } catch (Throwable t) {
+             LOGGER.error(LogUtils.FATAL_MARKER, "Failed to start the minecraft server", t);
++            System.exit(1); // The Archive - a pre-spin startup crash must exit non-zero, not fall through to exit 0
+         }
+     }
+ 
