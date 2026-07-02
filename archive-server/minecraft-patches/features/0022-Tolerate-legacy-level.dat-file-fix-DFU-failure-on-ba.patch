@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Thu, 2 Jul 2026 14:59:35 +0200
+Subject: [PATCH] Tolerate legacy level.dat file-fix DFU failure on batch pass
+
+
+diff --git a/net/minecraft/util/filefix/fixes/LevelDatToSavedDataFileFix.java b/net/minecraft/util/filefix/fixes/LevelDatToSavedDataFileFix.java
+index 442410a814c7cfea5b948396fd488c1f332b64a0..ef08e6f5cc52a2a3a5371939942e533b5e7c44d6 100644
+--- a/net/minecraft/util/filefix/fixes/LevelDatToSavedDataFileFix.java
++++ b/net/minecraft/util/filefix/fixes/LevelDatToSavedDataFileFix.java
+@@ -24,6 +24,7 @@ import net.minecraft.util.filefix.access.SavedDataNbt;
+ import net.minecraft.util.worldupdate.UpgradeProgress;
+ 
+ public class LevelDatToSavedDataFileFix extends FileFix {
++    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger(); // The Archive - log tolerated legacy file-fix DFU failures
+     private static final UUID FALLBACK_SINGLE_PLAYER_UUID = Util.NIL_UUID;
+     private static final String OVERWORLD = "overworld";
+     private static final String THE_NETHER = "the_nether";
+@@ -122,7 +123,14 @@ public class LevelDatToSavedDataFileFix extends FileFix {
+ 
+         Dynamic<?> playerTag = playerTagOpt.result().get();
+         int dataVersion = NbtUtils.getDataVersion(playerTag);
+-        Dynamic<?> playerTagFixed = DataFixTypes.PLAYER.update(DataFixers.getDataFixer(), playerTag, dataVersion, this.getVersion());
++        Dynamic<?> playerTagFixed;
++        try {
++            playerTagFixed = DataFixTypes.PLAYER.update(DataFixers.getDataFixer(), playerTag, dataVersion, this.getVersion());
++        } catch (RuntimeException e) { // The Archive - tolerate a legacy/Forge embedded Player that DFU cannot migrate, on batch-pass boots
++            if (!archive.ArchiveSettings.anyPostSpinPass()) throw e; // a plain boot stays vanilla-loud
++            LOGGER.error("[The Archive] Skipping level.dat Player extraction: DFU failed for the embedded Player at dataVersion {} (legacy/Forge level.dat). A region-only batch pass does not consume it; leaving it in place.", dataVersion, e);
++            return content;
++        }
+         Optional<? extends Dynamic<?>> playerUuid = playerTagFixed.get("UUID").result();
+         Dynamic<?> usedUuid;
+         if (playerUuid.isPresent()) {
+@@ -166,8 +174,15 @@ public class LevelDatToSavedDataFileFix extends FileFix {
+ 
+         Dynamic<?> worldGenSettingsTag = worldGenSettingsTagOpt.result().get();
+         int dataVersion = NbtUtils.getDataVersion(content);
+-        Dynamic<?> worldGenSettingsTagFixed = DataFixTypes.WORLD_GEN_SETTINGS
+-            .update(DataFixers.getDataFixer(), worldGenSettingsTag, dataVersion, this.getVersion());
++        Dynamic<?> worldGenSettingsTagFixed;
++        try {
++            worldGenSettingsTagFixed = DataFixTypes.WORLD_GEN_SETTINGS
++                .update(DataFixers.getDataFixer(), worldGenSettingsTag, dataVersion, this.getVersion());
++        } catch (RuntimeException e) { // The Archive - tolerate legacy worldgen-settings DFU failure on batch-pass boots
++            if (!archive.ArchiveSettings.anyPostSpinPass()) throw e; // a plain boot stays vanilla-loud
++            LOGGER.error("[The Archive] Skipping level.dat world_gen_settings extraction: DFU failed at dataVersion {} (legacy level.dat). A region-only batch pass generates no chunks; leaving it in place.", dataVersion, e);
++            return content;
++        }
+         targetFile.getOnlyFile().write(worldGenSettingsTagFixed);
+         return content.remove("world_gen_settings");
+     }
