@@ -14,6 +14,9 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.ticks.SavedTick;
+import net.minecraft.world.ticks.TickPriority;
 import org.bukkit.support.environment.AllFeatures;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -73,6 +76,42 @@ public class BakeLightJournalTest {
         // BlockStates are canonical instances; identity proves an exact round-trip.
         assertSame(state, decoded.state());
         assertEquals(0, decoded.propertiesSkipped());
+    }
+
+    @Test
+    void tickPayloadsRoundTripThroughAppendReadDecode(@TempDir Path dir) throws IOException {
+        BakeLightJournal.JournalRegistry registry = new BakeLightJournal.JournalRegistry(dir);
+        BakeLightJournal journal = registry.forCurrentThread();
+        BlockPos blockPos = new BlockPos(100, 12, -70);
+        BlockPos fluidPos = new BlockPos(-8, 64, 40);
+        journal.appendBlockTick(OVERWORLD, new SavedTick<>(Blocks.OAK_SAPLING, blockPos, 17, TickPriority.HIGH));
+        journal.appendFluidTick(OVERWORLD, new SavedTick<>(Fluids.WATER, fluidPos, 3, TickPriority.EXTREMELY_LOW));
+        registry.closeAll();
+
+        AtomicLong malformed = new AtomicLong();
+        List<BakeLightJournal.Record> records = BakeLightJournal.read(journal.path(), malformed);
+        assertEquals(2, records.size());
+        assertEquals(0, malformed.get());
+
+        BakeLightJournal.Record blockRecord = records.get(0);
+        assertEquals(BakeLightJournal.DISCRIMINANT_BLOCK_TICK, blockRecord.discriminant());
+        assertEquals(6, blockRecord.targetChunkX());
+        assertEquals(-5, blockRecord.targetChunkZ());
+        assertEquals(blockPos, blockRecord.blockPos());
+        BakeLightJournal.DecodedTick blockTick = BakeLightJournal.decodeTick(blockRecord);
+        assertEquals("minecraft:oak_sapling", blockTick.typeName());
+        assertEquals(blockPos, blockTick.pos());
+        assertEquals(17, blockTick.delay());
+        assertEquals(TickPriority.HIGH, blockTick.priority());
+
+        BakeLightJournal.Record fluidRecord = records.get(1);
+        assertEquals(BakeLightJournal.DISCRIMINANT_FLUID_TICK, fluidRecord.discriminant());
+        BakeLightJournal.DecodedTick fluidTick = BakeLightJournal.decodeTick(fluidRecord);
+        assertEquals("minecraft:water", fluidTick.typeName());
+        assertEquals(fluidPos, fluidTick.pos());
+        assertEquals(3, fluidTick.delay());
+        // Two distinct non-default priorities pin the ordinal byte encoding.
+        assertEquals(TickPriority.EXTREMELY_LOW, fluidTick.priority());
     }
 
     @Test
