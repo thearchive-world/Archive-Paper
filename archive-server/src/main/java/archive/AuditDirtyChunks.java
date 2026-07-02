@@ -407,7 +407,7 @@ public final class AuditDirtyChunks {
      *       chunks the bake actually tried to process.</li>
      * </ul>
      */
-    private enum BakeStatus { COMPLETE, PARTIAL, PENDING, INELIGIBLE }
+    enum BakeStatus { COMPLETE, PARTIAL, PENDING, INELIGIBLE }
 
     private static ChunkAudit auditChunk(RegionFile rf, ChunkPos pos) {
         CompoundTag root;
@@ -509,7 +509,7 @@ public final class AuditDirtyChunks {
      * rather than {@code UpgradeData.isEmpty()}: the latter only inspects
      * Indices and Sides, missing chunks that still carry neighbour ticks.
      */
-    private static BakeStatus classifyBakeStatus(CompoundTag root) {
+    static BakeStatus classifyBakeStatus(CompoundTag root) {
         // Status absent (or wrong type) makes SerializableChunkData.parse
         // return null at line 145, so BakeLightPass.loadCenter silently skips
         // and the chunk never moves toward COMPLETE. Bobby mod cache shape:
@@ -563,7 +563,7 @@ public final class AuditDirtyChunks {
      * need to distinguish those two shapes must inspect the root tag
      * themselves (see the consumer-blind note above {@link #classifyBakeStatus}).
      */
-    private static boolean upgradeDataIsDrained(CompoundTag root) {
+    static boolean upgradeDataIsDrained(CompoundTag root) {
         CompoundTag ud = root.getCompoundOrEmpty("UpgradeData");
         if (ud.isEmpty()) return true;
         // Vanilla UpgradeData.write serializes Indices as a CompoundTag keyed
