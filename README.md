@@ -81,7 +81,7 @@ The batch passes run headless. When any of `--upgradeChunks`, `--cleanDirtyChunk
 
 ## Upgrading a standalone NBT set
 
-`--upgradeNbt` is a standalone datafixer, separate from the world pipeline above: it touches no world content. It upgrades a directory of standalone block-entity NBT compounds from one data version to another in isolation, using the same rewrite converter (`MCDataConverter`) the chunk passes use, and writes each upgraded compound to an output directory under its original filename. It is the datafixer half of a downstream content-addressed block-entity store, which dedups a world's block entities to a small unique set and upgrades that set once per version bump.
+`--upgradeNbt` is a standalone datafixer, separate from the world pipeline above: it touches no world content. It upgrades a directory of standalone NBT compounds (block entities or entities) from one data version to another in isolation, using the same rewrite converter (`MCDataConverter`) the chunk passes use, and writes each upgraded compound to an output directory under its original filename. It is the datafixer half of a downstream content-addressed store, which dedups a world's block entities and entities to small unique sets and upgrades each set once per version bump.
 
 ```sh
 java -jar archive-paper*.jar nogui --upgradeNbt \
@@ -92,7 +92,7 @@ java -jar archive-paper*.jar nogui --upgradeNbt \
     --archiveNbtToVersion=4790
 ```
 
-- `--archiveNbtType` selects the converter data type. `TILE_ENTITY` (block entities) is supported; an unknown type is rejected with a non-zero exit.
+- `--archiveNbtType` selects the converter data type: `TILE_ENTITY` (block entities) or `ENTITY` (entities such as item frames, armor stands, item drops, minecarts). An unknown type is rejected with a non-zero exit. Each input compound must carry a namespaced `id`, which the converter routes every fixer off.
 - `--archiveNbtInputDir` and `--archiveNbtOutputDir` are directories of `*.nbt` files and must be different directories. Each input is one compound at `--archiveNbtFromVersion`; the output keeps the input filename. The output directory is created if absent, and re-runs overwrite.
 - `--archiveNbtFromVersion` is the source data version (required). `--archiveNbtToVersion` is the target; it defaults to the server's current world version when omitted, and must not be older than the from-version (the converter has no downgrade path).
 - The `.nbt` files are uncompressed, empty-named-root NBT (the form `net.minecraft.nbt.NbtIo.read`/`write` produces), not gzip.
