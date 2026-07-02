@@ -66,7 +66,9 @@ public class NbtSetUpgraderTest {
 
     @Test
     void rejectsUnknownType(@TempDir Path in, @TempDir Path out) throws Exception {
-        runWith("--upgradeNbt", "--archiveNbtType=ENTITY",
+        // TILE_ENTITY and ENTITY are both registered; use a value that maps to
+        // no MCTypeRegistry type so this stays an unknown-type case.
+        runWith("--upgradeNbt", "--archiveNbtType=NOT_A_REAL_TYPE",
             "--archiveNbtInputDir=" + in, "--archiveNbtOutputDir=" + out,
             "--archiveNbtFromVersion=3700");
         assertTrue(ArchiveSettings.passFailed());
@@ -128,5 +130,20 @@ public class NbtSetUpgraderTest {
             "--archiveNbtFromVersion=" + current, "--archiveNbtToVersion=" + current);
         assertFalse(ArchiveSettings.passFailed());
         assertEquals(chest, NbtIo.read(out.resolve("chest.nbt")));
+    }
+
+    @Test
+    void entityTypeResolvesAndRunsClean(@TempDir Path in, @TempDir Path out) throws Exception {
+        // ENTITY is an IDDataType like TILE_ENTITY; an identity-version run of a
+        // lone entity must resolve the type, run clean, and round-trip the compound.
+        CompoundTag armorStand = new CompoundTag();
+        armorStand.putString("id", "minecraft:armor_stand");
+        NbtIo.write(armorStand, in.resolve("armor_stand.nbt"));
+        int current = SharedConstants.WORLD_VERSION;
+        runWith("--upgradeNbt", "--archiveNbtType=ENTITY",
+            "--archiveNbtInputDir=" + in, "--archiveNbtOutputDir=" + out,
+            "--archiveNbtFromVersion=" + current, "--archiveNbtToVersion=" + current);
+        assertFalse(ArchiveSettings.passFailed());
+        assertEquals(armorStand, NbtIo.read(out.resolve("armor_stand.nbt")));
     }
 }

@@ -160,7 +160,7 @@ public final class NbtSetUpgrader {
                     continue;
                 }
                 if (data.getStringOr("id", "").isEmpty()) {
-                    // TILE_ENTITY (and later ENTITY) route every fixer off the id
+                    // TILE_ENTITY and ENTITY route every fixer off the id
                     // field; with no id the id-gated converters and the embedded
                     // item/payload sub-walkers silently no-op, producing a compound
                     // that looks upgraded but is not. Fail the file instead.
@@ -200,7 +200,7 @@ public final class NbtSetUpgrader {
 
     /**
      * Map the --archiveNbtType flag value to a converter data type. Both
-     * {@link MCTypeRegistry#TILE_ENTITY} and (later) {@code ENTITY} are
+     * {@link MCTypeRegistry#TILE_ENTITY} and {@link MCTypeRegistry#ENTITY} are
      * {@code IDDataType}, a subtype of {@link MCDataType}, so widening the
      * registry to a new type is a one-line addition here. Unknown/absent
      * returns {@code null}; the caller rejects it with a clear error.
@@ -209,12 +209,13 @@ public final class NbtSetUpgrader {
         if (typeName == null) return null;
         return switch (typeName) {
             case "TILE_ENTITY" -> MCTypeRegistry.TILE_ENTITY;
+            case "ENTITY" -> MCTypeRegistry.ENTITY;
             default -> null;
         };
     }
 
     private static String supportedTypes() {
-        return "TILE_ENTITY";
+        return "TILE_ENTITY, ENTITY";
     }
 
     /**
