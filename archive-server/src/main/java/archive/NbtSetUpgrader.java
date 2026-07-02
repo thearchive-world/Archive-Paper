@@ -58,6 +58,11 @@ import org.slf4j.Logger;
  */
 public final class NbtSetUpgrader {
     private static final Logger LOGGER = LogUtils.getLogger();
+    // Drive Paper's 60s watchdog at a steady cadence without spamming, mirroring
+    // AuditDirtyChunks. The conversion loop runs on the main server thread, so
+    // without this pump a set whose per-file work sums past timeout-time (default
+    // 60s) trips WatchdogThread and the pass is killed mid-loop.
+    private static final long WATCHDOG_TICK_INTERVAL_MILLIS = 5_000L;
 
     private NbtSetUpgrader() {}
 
@@ -146,9 +151,22 @@ public final class NbtSetUpgrader {
         }
 
         long startMillis = System.currentTimeMillis();
+        long lastWatchdogTick = startMillis;
         int written = 0;
         int failed = 0;
         for (Path input : inputs) {
+            // Keep the main server thread pumping Paper's watchdog on a steady
+            // cadence. Placed at the loop head so the per-file "continue" paths
+            // (vanished / no-id) cannot skip it and starve the pump. The gate on
+            // hasStarted is the same flag WatchdogThread.run checks before firing:
+            // true post-spin (when the watchdog can kill us), false in the unit env
+            // (run(null), no booted server) where an unguarded tick() would NPE on
+            // the null instance.
+            long now = System.currentTimeMillis();
+            if (org.spigotmc.WatchdogThread.hasStarted && now - lastWatchdogTick >= WATCHDOG_TICK_INTERVAL_MILLIS) {
+                org.spigotmc.WatchdogThread.tick();
+                lastWatchdogTick = now;
+            }
             String name = input.getFileName().toString();
             try {
                 CompoundTag data = NbtIo.read(input);
