@@ -184,7 +184,7 @@ public class BakeLightJournalTest {
     }
 
     @Test
-    void decodeSkipsUnknownPropertyAndUnroundtrippableValue(@TempDir Path dir) throws IOException {
+    void decodeSkipsUnknownPropertyAndUnroundtrippableValue() throws IOException {
         BakeLightJournal.BlockStateDecodeResult unknownName = BakeLightJournal.decodeBlockState(
             blockStateRecord(blockStatePayload("minecraft:oak_stairs", new String[][]{{"no_such_property", "x"}})));
         assertSame(Blocks.OAK_STAIRS.defaultBlockState(), unknownName.state());
@@ -197,7 +197,7 @@ public class BakeLightJournalTest {
     }
 
     @Test
-    void decodeUnknownBlockYieldsNullStateWithoutSkips(@TempDir Path dir) throws IOException {
+    void decodeUnknownBlockYieldsNullStateWithoutSkips() throws IOException {
         BakeLightJournal.BlockStateDecodeResult result = BakeLightJournal.decodeBlockState(
             blockStateRecord(blockStatePayload("minecraft:no_such_block", new String[0][])));
         assertNull(result.state());

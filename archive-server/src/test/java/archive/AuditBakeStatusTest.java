@@ -68,6 +68,23 @@ public class AuditBakeStatusTest {
     }
 
     @Test
+    void missingIsLightOnDemotesCompleteToPartial() {
+        CompoundTag root = completeChunk();
+        root.remove("isLightOn");
+        assertEquals(AuditDirtyChunks.BakeStatus.PARTIAL, AuditDirtyChunks.classifyBakeStatus(root));
+    }
+
+    @Test
+    void missingOneHeightmapDemotesCompleteToPartial() {
+        CompoundTag root = completeChunk();
+        String firstKey = ChunkStatus.FULL.heightmapsAfter().iterator().next().getSerializationKey();
+        CompoundTag heightmaps = root.getCompoundOrEmpty("Heightmaps");
+        heightmaps.remove(firstKey);
+        root.put("Heightmaps", heightmaps);
+        assertEquals(AuditDirtyChunks.BakeStatus.PARTIAL, AuditDirtyChunks.classifyBakeStatus(root));
+    }
+
+    @Test
     void undrainedUpgradeDataDemotesCompleteToPartial() {
         CompoundTag root = completeChunk();
         CompoundTag upgradeData = new CompoundTag();
