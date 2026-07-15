@@ -5,7 +5,7 @@ Subject: [PATCH] Restore forceUpgrade
 
 
 diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
-index 38b50aaf6473c7692d3372ad7b956355be989bd4..14e5e9859238c7bd6410bc1789fbad87904fce61 100644
+index 38b50aaf6473c7692d3372ad7b956355be989bd4..965c77750e76a429d23f9ff6e075f056566e0b35 100644
 --- a/net/minecraft/server/Main.java
 +++ b/net/minecraft/server/Main.java
 @@ -66,6 +66,7 @@ public class Main {
@@ -60,7 +60,7 @@ index 38b50aaf6473c7692d3372ad7b956355be989bd4..14e5e9859238c7bd6410bc1789fbad87
              final DedicatedServer dedicatedServer = MinecraftServer.spin(
                  thread -> {
                      DedicatedServer server = new DedicatedServer(
-@@ -426,10 +420,6 @@ public class Main {
+@@ -426,10 +430,6 @@ public class Main {
          final RegistryAccess registryAccess,
          final boolean recreateRegionFiles
      ) {
@@ -71,7 +71,7 @@ index 38b50aaf6473c7692d3372ad7b956355be989bd4..14e5e9859238c7bd6410bc1789fbad87
          LOGGER.info("Forcing world upgrade! {}", storageSource.getLevelId()); // CraftBukkit
  
          try (WorldUpgrader upgrader = new WorldUpgrader(storageSource, fixerUpper, registryAccess, eraseCache, recreateRegionFiles)) {
-@@ -458,6 +448,5 @@ public class Main {
+@@ -458,6 +458,5 @@ public class Main {
                  }
              }
          }

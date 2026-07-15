@@ -5,10 +5,11 @@ Subject: [PATCH] Allow loading root entities from outside the serialized chunk
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-index 2d24d03bbdb5ee0d862cbfff2219f58afffafe12..5cbdced0686d670c39927886f2ad2cc39d868c1f 100644
+index 56e71bf01f22579c294c6b33450bd282e082f6ae..be5b4f066f5a435d6cf186b6b38eb2e588589c8e 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-@@ -365,10 +365,3 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+@@ -364,13 +364,6 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+                 continue;
              }
  
 -            if (forChunk != null && !entity.chunkPosition().equals(forChunk)) {
@@ -19,3 +20,5 @@ index 2d24d03bbdb5ee0d862cbfff2219f58afffafe12..5cbdced0686d670c39927886f2ad2cc3
 -            }
 -
              final Vec3 rootPosition = entity.position();
+ 
+             // always adjust positions before adding passengers in case plugins access the entity, and so that
