@@ -2,7 +2,7 @@
 
 A [PaperMC](https://github.com/PaperMC/Paper) fork that serves archived Minecraft worlds as read-only servers, for [thearchive.world](https://thearchive.world).
 
-Archive-Paper runs archived worlds as a read-only server: saving is disabled by default, so chunk mutations, entity ticks, and player edits never persist to disk. The upgrade pipeline below exists to bring pre-26.1 source worlds up to the current data version before they're served; day-to-day operation is just running the server with the default `--archiveDisableSaving` behaviour.
+Archive-Paper runs archived worlds as a read-only server: saving is disabled by default, so chunk mutations, entity ticks, and player edits never persist to disk. The upgrade pipeline below exists to bring pre-26.2 source worlds up to the current data version before they're served; day-to-day operation is just running the server with the default `--archiveDisableSaving` behaviour.
 
 ## Contents
 
@@ -45,7 +45,7 @@ Serve an already-upgraded world (the day-to-day case; saving stays off by defaul
 java -Xmx32G -jar archive-paper*.jar nogui
 ```
 
-To bring a pre-26.1 world up to the current data version first, see [Upgrading worlds](#upgrading-worlds) and the full [Examples](#examples).
+To bring a pre-26.2 world up to the current data version first, see [Upgrading worlds](#upgrading-worlds) and the full [Examples](#examples).
 
 ## Usage
 
@@ -53,7 +53,7 @@ To bring a pre-26.1 world up to the current data version first, see [Upgrading w
 
 ## Upgrading worlds
 
-Archive-Paper does not auto-upgrade pre-26.1 source worlds on first startup. To upgrade in place, pass `--upgradeChunks` (recommended) or `--forceUpgrade`. Alternatively, run vanilla Paper once on the world, then switch to Archive-Paper.
+Archive-Paper does not auto-upgrade pre-26.2 source worlds on first startup. To upgrade in place, pass `--upgradeChunks` (recommended) or `--forceUpgrade`. Alternatively, run vanilla Paper once on the world, then switch to Archive-Paper.
 
 `--upgradeChunks` is the recommended path for upgrading archive worlds. Parallel post-spin conversion pass with saving enabled; resumable via `.archive-upgrade-progress.txt`; per-chunk failure tolerant. After the per-dimension chunk loop, a single-threaded tail pass DFUs `data/minecraft/maps/*.dat` and `last_id.dat` (overworld only); progress and failures share the same end-of-run summary. Logs `Starting chunk upgrade pass` when it begins. The server halts after the pass.
 
@@ -89,7 +89,7 @@ java -jar archive-paper*.jar nogui --upgradeNbt \
     --archiveNbtInputDir=<dir of source-version .nbt files> \
     --archiveNbtOutputDir=<dir for target-version .nbt files> \
     --archiveNbtFromVersion=4189 \
-    --archiveNbtToVersion=4790
+    --archiveNbtToVersion=4903
 ```
 
 - `--archiveNbtType` selects the converter data type: `TILE_ENTITY` (block entities) or `ENTITY` (entities such as item frames, armor stands, item drops, minecarts). An unknown type is rejected with a non-zero exit. Each input compound must carry a namespaced `id`, which the converter routes every fixer off.
@@ -117,7 +117,7 @@ Serve an already-upgraded world (the day-to-day case; saving stays off by defaul
 java -Xmx32G -jar archive-paper*.jar nogui
 ```
 
-Full upgrade pipeline on a pre-26.1 world, one invocation per pass:
+Full upgrade pipeline on a pre-26.2 world, one invocation per pass:
 
 ```sh
 java -Xmx32G -jar archive-paper*.jar nogui --upgradeChunks --upgradeWorkerCount=16 --splitEntities

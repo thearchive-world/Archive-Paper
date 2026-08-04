@@ -33,7 +33,7 @@ public final class ArchiveSettings {
         if (!force && !recreate) return;
         String flag = force && recreate ? "--forceUpgrade and --recreateRegionFiles"
                 : force ? "--forceUpgrade" : "--recreateRegionFiles";
-        LOGGER.error("[The Archive] --archiveDisableSaving=true combined with {} will silently no-op every upgrade write. On a pre-26.1 world this wedges WorldFolderMigration in a retry loop. Drop --archiveDisableSaving (or set it to false) to actually persist the upgrade.", flag);
+        LOGGER.error("[The Archive] --archiveDisableSaving=true combined with {} will silently no-op every upgrade write. On a pre-26.2 world this wedges WorldFolderMigration in a retry loop. Drop --archiveDisableSaving (or set it to false) to actually persist the upgrade.", flag);
     }
 
     private static void warnIfUpgradeChunksWedge(OptionSet options) {
