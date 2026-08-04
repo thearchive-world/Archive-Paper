@@ -5,10 +5,10 @@ Subject: [PATCH] Exit non-zero on pre-spin startup failure
 
 
 diff --git a/net/minecraft/server/Main.java b/net/minecraft/server/Main.java
-index 965c77750e76a429d23f9ff6e075f056566e0b35..dafb73f4f5d1e9ae233b064a75e8637dcb4d0ea4 100644
+index fc05c91136b98eeca43dca0f3228cad184c6d9a1..8c63d882d7191877d0ce2070d0c586929af0c041 100644
 --- a/net/minecraft/server/Main.java
 +++ b/net/minecraft/server/Main.java
-@@ -146,6 +146,10 @@ public class Main {
+@@ -158,6 +158,10 @@ public class Main {
              } else if (!eula.hasAgreedToEULA()) {
                  // Paper end - eula system property
                  LOGGER.info("You need to agree to the EULA in order to run the server. Go to eula.txt for more info.");
@@ -19,7 +19,7 @@ index 965c77750e76a429d23f9ff6e075f056566e0b35..dafb73f4f5d1e9ae233b064a75e8637d
                  return;
              }
  
-@@ -157,6 +161,7 @@ public class Main {
+@@ -169,6 +173,7 @@ public class Main {
                  LOGGER.error("For instructions on how to install the non-headless JRE, see https://docs.papermc.io/misc/java-install");
                  LOGGER.error("");
                  LOGGER.error(awtException);
@@ -27,7 +27,7 @@ index 965c77750e76a429d23f9ff6e075f056566e0b35..dafb73f4f5d1e9ae233b064a75e8637d
                  return;
              }
              // Paper end - Detect headless JRE
-@@ -184,6 +189,7 @@ public class Main {
+@@ -198,6 +203,7 @@ public class Main {
                      levelDataUnfixed = access.getUnfixedDataTagWithFallback();
                  } catch (IOException | NbtException | ReportedNbtException ex) {
                      LOGGER.error("Failed to load world data. World files may be corrupted. Shutting down.", ex);
@@ -35,7 +35,7 @@ index 965c77750e76a429d23f9ff6e075f056566e0b35..dafb73f4f5d1e9ae233b064a75e8637d
                      return;
                  }
  
-@@ -279,6 +285,7 @@ public class Main {
+@@ -293,6 +299,7 @@ public class Main {
                  LOGGER.warn(
                      "Failed to load datapacks, can't proceed with server load. You can either fix your datapacks or reset to vanilla with --safeMode", e
                  );
@@ -43,7 +43,7 @@ index 965c77750e76a429d23f9ff6e075f056566e0b35..dafb73f4f5d1e9ae233b064a75e8637d
                  return;
              }
  
-@@ -356,6 +363,7 @@ public class Main {
+@@ -372,6 +379,7 @@ public class Main {
              */ // CraftBukkit end
          } catch (Throwable t) {
              LOGGER.error(LogUtils.FATAL_MARKER, "Failed to start the minecraft server", t);

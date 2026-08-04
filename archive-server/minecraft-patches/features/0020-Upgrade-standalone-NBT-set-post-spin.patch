@@ -5,10 +5,10 @@ Subject: [PATCH] Upgrade standalone NBT set post-spin
 
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 4042edd6ec84298da0ac51c11dc8b0b8c11e2fc5..4e94ca8d935cd610d47f4b35ad50ef2b0df759f2 100644
+index 8b5dcff23e30babbfd41a93e7c1385f0c60ecddd..5576fe02766f9dc82a7e6d97acb8924f2fce205a 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1327,7 +1327,20 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1302,7 +1302,20 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                  CompletableFuture.runAsync(com.destroystokyo.paper.PaperVersionFetcher::getUpdateStatusStartupMessage, io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR);
              }
              // Paper end - Improve outdated version checking

@@ -11,15 +11,15 @@ have no stale chunks). Skip the call when ArchiveSettings.upgradeComplete
 is set.
 
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-index ab2224ecebc5ea185472b418f0bde6eddfa4f287..06afdf24a2a4786b05d9c70d318ae52d73941897 100644
+index 716c3b17dc07eb2417dfb0084fe75dbd270f031a..9621e13dbf3c4cfa5bcbf89390c157f88d5e5950 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-@@ -1255,7 +1255,7 @@ public final class CraftServer implements Server {
+@@ -1257,7 +1257,7 @@ public final class CraftServer implements Server {
  
-         contextLevelStemRegistry = registryAccess.lookupOrThrow(Registries.LEVEL_STEM);
+         levelStemRegistry = contextRegistryAccess.lookupOrThrow(Registries.LEVEL_STEM);
  
 -        if (this.console.options.has("forceUpgrade")) {
 +        if (this.console.options.has("forceUpgrade") && !archive.ArchiveSettings.upgradeComplete()) { // The Archive - skip when Main.main already ran the upgrade
-             net.minecraft.server.Main.forceUpgrade(this.console.storageSource, DataFixers.getDataFixer(), this.console.options.has("eraseCache"), () -> true, registryAccess, this.console.options.has("recreateRegionFiles"));
+             net.minecraft.server.Main.forceUpgrade(this.console.storageSource, DataFixers.getDataFixer(), this.console.options.has("eraseCache"), () -> true, contextRegistryAccess, this.console.options.has("recreateRegionFiles"));
          }
  

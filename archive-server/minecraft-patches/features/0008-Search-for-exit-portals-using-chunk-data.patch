@@ -5,10 +5,10 @@ Subject: [PATCH] Search for exit portals using chunk data
 
 
 diff --git a/net/minecraft/world/level/block/NetherPortalBlock.java b/net/minecraft/world/level/block/NetherPortalBlock.java
-index b66aa14aea47e3b10c3e28cf25a64be550a8f5e0..b66bb2acefa735d5499d593cb49e389b4ddc34a2 100644
+index 0bc5063f05599f41086f23ba6753e268258add3a..5e2b30b016515431d23190ebee3fed8edc3060b3 100644
 --- a/net/minecraft/world/level/block/NetherPortalBlock.java
 +++ b/net/minecraft/world/level/block/NetherPortalBlock.java
-@@ -188,7 +188,12 @@ public class NetherPortalBlock extends Block implements Portal {
+@@ -190,7 +190,12 @@ public class NetherPortalBlock extends Block implements Portal {
          final WorldBorder worldBorder
          , org.bukkit.craftbukkit.event.PortalEventResult result // CraftBukkit
      ) {

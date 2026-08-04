@@ -5,10 +5,10 @@ Subject: [PATCH] Allow loading root entities from outside the serialized chunk
 
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-index 56e71bf01f22579c294c6b33450bd282e082f6ae..be5b4f066f5a435d6cf186b6b38eb2e588589c8e 100644
+index 328784ba08236553e49d62320b79f7222292412f..84cb47db7bd1df17306bff5d31e115a8b972e6d2 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-@@ -364,13 +364,6 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+@@ -368,13 +368,6 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
                  continue;
              }
  

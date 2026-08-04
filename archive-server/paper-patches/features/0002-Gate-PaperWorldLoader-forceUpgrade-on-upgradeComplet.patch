@@ -12,10 +12,10 @@ Skip the per-world invocation when ArchiveSettings.upgradeComplete is set
 (i.e. when Main.main already ran the upgrade).
 
 diff --git a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
-index cd3e7cc8cf083915de46e03d9b2aaea3003f48fb..58701d1f35879cf54fc010231de98356f74cd328 100644
+index 66ee5e01f18946d30ff322b3d8a4eb93677a7373..d82db618b275e8dff00eee9c86fa7baae9ebc9ba 100644
 --- a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
 +++ b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
-@@ -167,7 +167,7 @@ public record PaperWorldLoader(MinecraftServer server, String levelId) {
+@@ -159,7 +159,7 @@ public record PaperWorldLoader(MinecraftServer server, String levelId) {
              primaryLevelData.setModdedInfo(this.server.getServerModName(), this.server.getModdedStatus().shouldReportAsModified());
          }
  

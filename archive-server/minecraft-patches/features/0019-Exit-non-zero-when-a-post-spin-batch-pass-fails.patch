@@ -5,10 +5,10 @@ Subject: [PATCH] Exit non-zero when a post-spin batch pass fails
 
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index fa46403cf22e6f46c0f894b4f7ebe83da0868dfa..4042edd6ec84298da0ac51c11dc8b0b8c11e2fc5 100644
+index 163761d9ae2921fdf5ac5d735ff7de6e8925c80c..8b5dcff23e30babbfd41a93e7c1385f0c60ecddd 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1330,29 +1330,53 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1305,29 +1305,53 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
              // The Archive start - upgrade chunks post-spin (first in dispatch; runs the pre-26.1 direct-NBT chunk upgrade pass)
              if (archive.ArchiveSettings.upgradeChunksRequested()
                      && !archive.ArchiveSettings.upgradeChunksComplete()) {
