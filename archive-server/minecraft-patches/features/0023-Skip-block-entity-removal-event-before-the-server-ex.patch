@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: terbin <terbin.2b2t@gmail.com>
+Date: Tue, 4 Aug 2026 13:21:01 +0200
+Subject: [PATCH] Skip block entity removal event before the server exists
+
+
+diff --git a/ca/spottedleaf/dataconverter/minecraft/converters/tileentity/ConverterAbstractTileEntityRemove.java b/ca/spottedleaf/dataconverter/minecraft/converters/tileentity/ConverterAbstractTileEntityRemove.java
+index 8d47addc3cf6d0c551809463992da8551c2835f6..90546b427e8061f0fc598189ca6bcffc330dc4f9 100644
+--- a/ca/spottedleaf/dataconverter/minecraft/converters/tileentity/ConverterAbstractTileEntityRemove.java
++++ b/ca/spottedleaf/dataconverter/minecraft/converters/tileentity/ConverterAbstractTileEntityRemove.java
+@@ -77,7 +77,7 @@ public final class ConverterAbstractTileEntityRemove {
+                     if (isType(blockEntities.getMap(i), type)) {
+                         // Paper start - call event on block entity removal
+                         final net.kyori.adventure.key.Key worldKey = worldKeySupplier.get();
+-                        if (worldKey != null) {
++                        if (worldKey != null && org.bukkit.Bukkit.getServer() != null) { // The Archive - skip the event before the server exists
+                             final MapType blockEntity = blockEntities.getMap(i);
+                             final Number x = blockEntity.getNumber("x");
+                             final Number y = blockEntity.getNumber("y");
