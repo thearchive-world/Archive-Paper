@@ -20,6 +20,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import archive.UuidDecoder.UuidResult;
 import archive.UuidDecoder.UuidStatus;
+import net.minecraft.SharedConstants;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
@@ -109,6 +110,8 @@ public final class AuditDirtyChunks {
     private static final long WATCHDOG_TICK_INTERVAL_MILLIS = 5_000;
     // Same cadence as DirtNbtCleaner so audit progress logs look familiar.
     private static final long PROGRESS_LOG_INTERVAL_MILLIS = 30_000;
+    private static final int CURRENT_DATA_VERSION =
+        SharedConstants.getCurrentVersion().dataVersion().version();
     // Populated at the top of run(). The worker thread reads it via a local
     // copy passed through auditLevel -> auditChunk. Static so we don't have to
     // thread it through every signature.
@@ -191,10 +194,10 @@ public final class AuditDirtyChunks {
             .mapToLong(c -> c.get() - 1)
             .filter(n -> n > 0)
             .sum();
-        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid in {}s",
+        LOGGER.info("[The Archive] Audit complete: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} uuid-dups, {} legacy-chunks, {} stale-dataversion, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid in {}s",
                     total.chunks, total.blockEntities, total.ghostBes, total.beCoordMismatch,
                     total.beTypeMismatch,
-                    total.entities, total.invalidAttrs, uuidDups, total.legacyChunks,
+                    total.entities, total.invalidAttrs, uuidDups, total.legacyChunks, total.staleDataVersion,
                     total.bakeComplete, total.bakePartial, total.bakePending, total.bakeIneligible,
                     total.poiValidSections, total.poiInvalidSections,
                     elapsedSec);
@@ -202,8 +205,9 @@ public final class AuditDirtyChunks {
         // Optional pipeline gate: when --auditFailOnDirty is set, a non-zero
         // count of the dirt classes the cleaner targets (and that should be zero
         // after --cleanDirtyChunks) marks the pass failed, so the dispatcher
-        // sets abnormalExit and the process exits 70. legacy-chunks, bake-*,
-        // poi-*, and the plain totals are informational and never gate.
+        // sets abnormalExit and the process exits 70. legacy-chunks,
+        // stale-dataversion, bake-*, poi-*, and the plain totals are
+        // informational and never gate.
         long dirt = total.ghostBes + total.beCoordMismatch + total.beTypeMismatch
                   + total.invalidAttrs + uuidDups;
         if (ArchiveSettings.auditFailOnDirty() && dirt > 0) {
@@ -259,6 +263,7 @@ public final class AuditDirtyChunks {
                         regionTotals.entities += a.entityCount;
                         regionTotals.invalidAttrs += a.invalidAttrCount;
                         if (a.legacy) regionTotals.legacyChunks++;
+                        if (a.staleDataVersion) regionTotals.staleDataVersion++;
                         switch (a.bakeStatus) {
                             case COMPLETE -> regionTotals.bakeComplete++;
                             case PARTIAL -> regionTotals.bakePartial++;
@@ -348,10 +353,10 @@ public final class AuditDirtyChunks {
             }
         }
 
-        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid",
+        LOGGER.info("[The Archive]   {}: {} chunks, {} block entities, {} ghost-bes, {} be-coord-mismatch, {} be-type-mismatch, {} entities, {} invalid-attrs, {} legacy-chunks, {} stale-dataversion, {} bake-complete, {} bake-partial, {} bake-pending, {} bake-ineligible, {} poi-valid, {} poi-invalid",
                     dim, dimTotals.chunks, dimTotals.blockEntities, dimTotals.ghostBes, dimTotals.beCoordMismatch,
                     dimTotals.beTypeMismatch,
-                    dimTotals.entities, dimTotals.invalidAttrs, dimTotals.legacyChunks,
+                    dimTotals.entities, dimTotals.invalidAttrs, dimTotals.legacyChunks, dimTotals.staleDataVersion,
                     dimTotals.bakeComplete, dimTotals.bakePartial, dimTotals.bakePending, dimTotals.bakeIneligible,
                     dimTotals.poiValidSections, dimTotals.poiInvalidSections);
     }
@@ -374,6 +379,7 @@ public final class AuditDirtyChunks {
     private record ChunkAudit(int blockEntityCount, int ghostBeCount, int beCoordMismatchCount,
                               int beTypeMismatchCount,
                               int entityCount, int invalidAttrCount, boolean legacy,
+                              boolean staleDataVersion,
                               BakeStatus bakeStatus) {}
 
     private record EntityAudit(int entityCount, int invalidAttrCount) {}
@@ -426,8 +432,9 @@ public final class AuditDirtyChunks {
         // legacy so the operator knows the invalid-attrs total is a lower
         // bound. DFU'ing first (--upgradeChunks) lifts them to the schema we
         // can validate.
+        boolean stale = isStaleDataVersion(root);
         boolean legacy = root.getCompound("Level").isPresent();
-        if (legacy) return new ChunkAudit(0, 0, 0, 0, 0, 0, true, BakeStatus.PENDING);
+        if (legacy) return new ChunkAudit(0, 0, 0, 0, 0, 0, true, stale, BakeStatus.PENDING);
 
         BakeStatus bakeStatus = classifyBakeStatus(root);
 
@@ -437,7 +444,7 @@ public final class AuditDirtyChunks {
         EntityAudit ea = auditEntityList(root.getListOrEmpty("entities"));
 
         ListTag bes = root.getListOrEmpty("block_entities");
-        if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, 0, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
+        if (bes.isEmpty()) return new ChunkAudit(0, 0, 0, 0, ea.entityCount, ea.invalidAttrCount, false, stale, bakeStatus);
 
         Map<Integer, NbtSectionDecoder> sections = new HashMap<>();
         for (int i = 0; i < root.getListOrEmpty("sections").size(); i++) {
@@ -489,7 +496,18 @@ public final class AuditDirtyChunks {
                 }
             }
         }
-        return new ChunkAudit(bes.size(), ghosts, coordMismatch, typeMismatch, ea.entityCount, ea.invalidAttrCount, false, bakeStatus);
+        return new ChunkAudit(bes.size(), ghosts, coordMismatch, typeMismatch, ea.entityCount, ea.invalidAttrCount, false, stale, bakeStatus);
+    }
+
+    /**
+     * A chunk is stale when its own DataVersion is not the server's current
+     * one. This is the only signal that finds a world which pipelined cleanly
+     * under a previous Minecraft version: legacy-chunks fires solely on the
+     * pre-1.13 "Level" wrapper, so a fully upgraded world one version behind
+     * counts as zero everywhere else. Absent tag reads 0, which is stale.
+     */
+    static boolean isStaleDataVersion(CompoundTag root) {
+        return root.getIntOr("DataVersion", 0) != CURRENT_DATA_VERSION;
     }
 
     /**
@@ -669,6 +687,7 @@ public final class AuditDirtyChunks {
         long entities;
         long invalidAttrs;
         long legacyChunks;
+        long staleDataVersion;
         // Bake-status counters: see {@link BakeStatus}. bake-pending dominates a
         // pre-bake post-DFU snapshot, bake-complete should fully account for
         // non-legacy chunks after --bakeLight, and a non-zero bake-partial on
@@ -693,6 +712,7 @@ public final class AuditDirtyChunks {
             entities += other.entities;
             invalidAttrs += other.invalidAttrs;
             legacyChunks += other.legacyChunks;
+            staleDataVersion += other.staleDataVersion;
             bakeComplete += other.bakeComplete;
             bakePartial += other.bakePartial;
             bakePending += other.bakePending;
